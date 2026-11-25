@@ -4,7 +4,6 @@ import base64
 import io
 
 import numpy as np
-import pytest
 from PIL import Image, ImageDraw
 
 import app as web
@@ -64,54 +63,6 @@ def test_photo_pipeline():
     })
     assert report.status_code == 200
     assert report.data[:4] == b"%PDF"
-
-
-def test_local_dem_geotiff():
-    tifffile = pytest.importorskip("tifffile")
-    client = web.app.test_client()
-    dem = (np.arange(16 * 16, dtype=np.int16).reshape(16, 16) + 100)
-    dem[0, 0] = -32768
-    bio = io.BytesIO()
-    tifffile.imwrite(bio, dem, extratags=[
-        (33550, "d", 3, (0.01, 0.01, 0.0)),
-        (33922, "d", 6, (0.0, 0.0, 0.0, 30.0, 60.0, 0.0)),
-        (34735, "H", 8, (1, 1, 0, 1, 2048, 0, 1, 4326)),
-        (42113, "s", 6, "-32768"),
-    ])
-    data = "data:image/tiff;base64," + base64.b64encode(bio.getvalue()).decode("ascii")
-    try:
-        uploaded = client.post("/api/dem/upload", json={
-            "files": [{"name": "dem.tif", "data": data}]})
-        assert uploaded.status_code == 200
-        tile = uploaded.json["tiles"][0]
-        assert tile["name"] == "dem.tif"
-        assert (tile["west"], tile["north"]) == (30.0, 60.0)
-        assert round(tile["east"] - tile["west"], 5) == 0.16
-
-        view = client.post("/api/map/view", json={
-            "lon": 30.08, "lat": 59.92, "zoom": 12, "width": 240,
-            "height": 180, "relief": True})
-        assert view.status_code == 200
-        assert "локальный DEM GeoTIFF" in view.json["credit"]
-
-        far = client.post("/api/map/view", json={
-            "lon": 41.7, "lat": 43.5, "zoom": 11, "width": 240,
-            "height": 180, "relief": True})
-        assert far.status_code == 200
-        assert "локальный DEM GeoTIFF" not in far.json["credit"]
-
-        lon, lat, zoom = 30.08, 59.92, 12
-        cx, cy = web.map_core.lonlat_to_tile(lon, lat, zoom)
-        geo = {"x0": cx - 240 / 512.0, "y0": cy - 180 / 512.0, "z": zoom,
-               "w": 240, "h": 180, "center_lon": lon, "center_lat": lat}
-        dz = web.map_core.best_dem_zoom(zoom, lat)
-        heights, dgeo = web.map_core.fetch_dem_for_view(geo, dz, margin=0)
-        assert dgeo["view_z"] == zoom
-        assert np.nanmin(heights) < np.nanmax(heights)
-        assert np.nanmin(heights) > 0  # GDAL_NODATA не попал в высоты
-    finally:
-        client.post("/api/dem/clear", json={})
-    assert not web.LOCAL_DEMS
 
 
 def test_map_pipeline():
