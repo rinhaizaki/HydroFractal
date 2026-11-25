@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Гидрофрактал — перенаправление</title>
+  <meta http-equiv="refresh" content="0; url=static/index.html">
+  <script>
+    // Страница нужна на случай, если GitHub Pages собирает сайт из корня репозитория.
+    // Если источник — каталог static/, открывается сразу static/index.html.
+    var base = location.pathname.replace(/\/$/, '');
+    location.replace(base + '/static/index.html');
+  </script>
+</head>
+<body>
+  <p>Переход в приложение… <a href="static/index.html">Открыть Гидрофрактал</a></p>
+</body>
+</html>
