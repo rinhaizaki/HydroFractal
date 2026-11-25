@@ -253,7 +253,7 @@ def write_report(self, path):
     class ProbGrid(Flowable):
         """Клетчатка вероятностей для теоретической кривой обеспеченности:
         по горизонтали — обеспеченность P, % (вероятностная, нормальная
-        шкала 0,1…99,9 %), по вертикали — модульный коэффициент K_P
+        шкала 0,1…99,9 %), по вертикали — модульный коэффициент k_p
         (правая ось расходов не выводится)."""
 
         # основные значения P (подписываются на оси)
@@ -278,7 +278,7 @@ def write_report(self, path):
         def _z(p):
             return _nd.inv_cdf(p / 100.0)
 
-        # ---------- шкала K_P: границы по краям бланка ----------
+        # ---------- шкала k_p: границы по краям бланка ----------
         def _kp_range(self):
             if not hasattr(self, "_kp_lo"):
                 ks = [self.kp_func(p) for p in (0.1, 99.9)]
@@ -295,7 +295,7 @@ def write_report(self, path):
 
         def draw(self):
             c = self.canv
-            # слева оставляем место для шкалы K_P
+            # слева оставляем место для шкалы k_p
             x0, y0 = 64.0, 40.0
             x1, y1 = self.width - 10.0, self.height - 10.0
             zmin, zmax = self._z(0.1), self._z(99.9)
@@ -303,7 +303,7 @@ def write_report(self, path):
             def xp(p):
                 return x0 + (self._z(p) - zmin) / (zmax - zmin) * (x1 - x0)
 
-            # ---------- горизонтальная сетка по K_P ----------
+            # ---------- горизонтальная сетка по k_p ----------
             if self.kp_func is not None:
                 lo, hi = self._kp_range()
                 # шаг 0.2 — промежуточные линии, 1.0 — основные
@@ -352,7 +352,7 @@ def write_report(self, path):
             c.setFont("Times New Roman", 9.5)
             c.drawRightString(x1, y0 - 28, "Обеспеченность P, %")
 
-            # ---------- слева: шкала модульных коэффициентов K_P ----------
+            # ---------- слева: шкала модульных коэффициентов k_p ----------
             if self.kp_func is not None:
                 lo, hi = self._kp_range()
                 c.setFont("Times New Roman", 8.5)
@@ -373,14 +373,14 @@ def write_report(self, path):
                 c.translate(13, (y0 + y1) / 2.0)
                 c.rotate(90)
                 c.setFont("Times New Roman", 9.5)
-                label = "Модульный коэффициент K"
+                label = "Модульный коэффициент k"
                 lw = c.stringWidth(label, "Times New Roman", 9.5)
                 c.setFont("Times New Roman", 7)
                 pw = c.stringWidth("P", "Times New Roman", 7)
                 c.setFont("Times New Roman", 9.5)
                 c.drawString(-(lw + pw) / 2, 0, label)
                 c.setFont("Times New Roman", 7)
-                c.drawString(-(lw + pw) / 2 + lw, -2.5, "P")
+                c.drawString(-(lw + pw) / 2 + lw, -2.5, "p")
                 c.restoreState()
 
     def buf_image(pil_image, width_cm, fmt="PNG"):
@@ -926,23 +926,23 @@ def write_report(self, path):
     story.append(fig_caption(
         "Рисунок 4 — Теоретическая кривая обеспеченности "
         "(Пирсона III типа): P, % — модульный коэффициент "
-        "K<sub>P</sub>", markup=True))
+        "k<sub>p</sub>", markup=True))
 
-    # ---------------- VII. таблица P, K_P, Q_P + пояснения ----------------
+    # ---------------- VII. таблица P, k_p, Q_P + пояснения ----------------
     story.append(NextPageTemplate("portrait"))
     story.append(PageBreak())
     story.append(sect(
         "VII. Расчёт ординат теоретической кривой обеспеченности"))
     story.append(Paragraph(
         "В таблице 5 приведены ординаты теоретической кривой: "
-        "обеспеченность P, модульные коэффициенты K<sub>P</sub> и "
+        "обеспеченность P, модульные коэффициенты k<sub>p</sub> и "
         "соответствующие расходы воды Q<sub>P</sub>.", body))
     # вводный текст до таблицы
     story.append(tbl_caption(
         "Таблица 5 — Ординаты теоретической кривой", markup=True))
     p_majors = ProbGrid.major_p
     # вертикальная таблица: строка = значение обеспеченности
-    t5_rows = [["Обеспеченность<br/>P, %", "Модульный коэффициент<br/>K<sub>P</sub>",
+    t5_rows = [["Обеспеченность<br/>P, %", "Модульный коэффициент<br/>k<sub>p</sub>",
                 "Расход воды<br/>Q<sub>P</sub>, м³/с"]]
     for p in p_majors:
         t5_rows.append([("%g" % p).replace(".", ","),
@@ -953,8 +953,8 @@ def write_report(self, path):
                        markup=True))
     story.append(Paragraph(
         "Пояснение: P — обеспеченность (вероятность превышения), %; "
-        "K<sub>P</sub> — модульный коэффициент; Q<sub>P</sub> = "
-        "K<sub>P</sub>·Q<sub>ср</sub> — расход воды заданной обеспеченности, "
+        "k<sub>p</sub> — модульный коэффициент; Q<sub>P</sub> = "
+        "k<sub>p</sub>·Q<sub>ср</sub> — расход воды заданной обеспеченности, "
         "м³/с. Строки соответствуют основным значениям P рисунка 4.", note))
 
     story.append(PageBreak())      # пояснения — на отдельной странице
@@ -965,12 +965,12 @@ def write_report(self, path):
         "обеспеченности P вычисляется по формуле", body))
     story.append(formula_no([
         "Q<sub>P</sub> = (Φ<sub>P</sub>·C<sub>v</sub> + 1)·"
-        "Q<sub>ср</sub> = K<sub>P</sub>·Q<sub>ср</sub>",
+        "Q<sub>ср</sub> = k<sub>p</sub>·Q<sub>ср</sub>",
     ]))
     story.append(Paragraph(
         "где Q<sub>P</sub> — расход воды обеспеченности P, м³/с; Φ<sub>P</sub> "
         "— коэффициент Фостера–Рыбкина; C<sub>v</sub> — коэффициент вариации; "
-        "Q<sub>ср</sub> — средний многолетний расход; K<sub>P</sub> — модульный "
+        "Q<sub>ср</sub> — средний многолетний расход; k<sub>p</sub> — модульный "
         "коэффициент.", note))
     story.append(formula_no([
         "Φ<sub>P</sub> = z<sub>P</sub> + (C<sub>s</sub>/6)·"
@@ -981,10 +981,10 @@ def write_report(self, path):
         "квантиль стандартного нормального распределения для обеспеченности "
         "P; C<sub>s</sub> — коэффициент асимметрии.", note))
     story.append(formula_no([
-        "K<sub>P</sub> = Φ<sub>P</sub>·C<sub>v</sub> + 1",
+        "k<sub>p</sub> = Φ<sub>P</sub>·C<sub>v</sub> + 1",
     ]))
     story.append(Paragraph(
-        "где K<sub>P</sub> — модульный коэффициент, показывающий, во сколько "
+        "где k<sub>p</sub> — модульный коэффициент, показывающий, во сколько "
         "раз расход обеспеченности P отличается от Q<sub>ср</sub>; Φ<sub>P</sub> "
         "— коэффициент Фостера–Рыбкина; C<sub>v</sub> — коэффициент вариации.", note))
     story.append(Paragraph(
@@ -992,7 +992,7 @@ def write_report(self, path):
         "стандартного нормального распределения для обеспеченности P; "
         "значения Φ<sub>P</sub> определяются по стандартным таблицам "
         "(например, СП 33-101-2003). Модульные коэффициенты "
-        "K<sub>P</sub> образуют вспомогательную шкалу перехода от "
+        "k<sub>p</sub> образуют вспомогательную шкалу перехода от "
         "обеспеченности к расходу.", body))
 
     # ---------- сборка ----------

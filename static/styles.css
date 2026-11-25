@@ -129,6 +129,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .select.tool-select { min-width: 265px; }
 .num { width: 48px; text-align: center; padding: 4px 2px; }
 .num.coord-num { width: 104px; }
+.mark-label { width: 130px; }
 .range { width: 110px; accent-color: var(--olive-dark); }
 .range.short { width: 86px; }
 .check { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 11.5px; color: var(--text); }
@@ -176,6 +177,9 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .leaflet-container { background: var(--canvas); font-family: inherit; }
 .leaflet-control-attribution { font-size: 9px; background: rgba(255,248,243,.85) !important; color: var(--hint); }
 .leaflet-control-attribution a { color: var(--burgundy); }
+/* убираем флаг в атрибуции Leaflet — нужен только текст источника */
+.leaflet-attribution-flag { display: none !important; }
+.btn.selected-accent { background: var(--burgundy); border-color: var(--red); color: #fff; font-weight: 600; }
 
 .placeholder {
   position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -269,6 +273,7 @@ table.data td:first-child { text-align: left; }
 .modal-card code { background: var(--cream); padding: 1px 5px; border-radius: 3px; }
 .modal-close { position: absolute; top: 10px; right: 12px; border: 0; background: transparent; font-size: 18px; color: var(--hint); }
 .modal-card > .btn { margin-top: 12px; }
+.modal-card > .btn + .btn { margin-left: 8px; }
 
 .toast {
   position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%);

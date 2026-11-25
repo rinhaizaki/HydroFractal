@@ -23,7 +23,7 @@
     mapReport: $('mapReport'), mapPlot: $('mapPlotImg'), mapPlotEmpty: $('mapPlotEmpty'),
     mapTableWrap: $('mapTableWrap'), mapTableDetails: $('mapTableDetails'),
     mapCredit: $('mapCredit'), mapZoom: $('mapZoom'), mapCoords: $('mapCoords'),
-    mapLat: $('mapLat'), mapLon: $('mapLon'),
+    mapLat: $('mapLat'), mapLon: $('mapLon'), mapMarkText: $('mapMarkText'),
     leafletWrap: $('leafletMap'),
     mapMinimapBox: $('mapMinimapBox'), mapMinimapCanvas: $('mapMinimapCanvas'),
     status: $('status'), statusRight: $('statusRight'),
@@ -43,6 +43,7 @@
     undo: [], redo: [], painting: false, panning: false, lastPaint: null, lastPointer: null,
     result: null, waterPixels: 0, waterShare: 0, minimapVisible: false, maskNonEmpty: false,
     overlayDataURL: null, maskTouched: false,
+    crop: { active: false, start: null, end: null },
     mapTabLoaded: false, activeTab: 'photo',
     map: {
       lon: 30.33510, lat: 59.93428, zoom: 11, source: 'esri', relief: false,
@@ -52,6 +53,7 @@
       tiles: [], reliefImg: null, overlayImg: null, reportImage: null, mask: null, width: 0, height: 0,
       minimapVisible: false, miniKey: '', miniResp: null,
       leaflet: null, tileLayer: null, layerIndex: 0, tileErrors: 0,
+      marks: [], markMode: false,
       leafletCredit: 'Снимок: Esri, Maxar, Earthstar Geographics',
       overlayGeo: null, reliefGeo: null, moveTimer: null
     }
@@ -314,6 +316,18 @@
     }
     ctx.restore();
     drawPhotoMarkers(ctx, t);
+    if (S.crop.active && S.crop.start && S.crop.end) {
+      const x = Math.min(S.crop.start.x, S.crop.end.x);
+      const y = Math.min(S.crop.start.y, S.crop.end.y);
+      const cw = Math.abs(S.crop.end.x - S.crop.start.x);
+      const ch = Math.abs(S.crop.end.y - S.crop.start.y);
+      ctx.save();
+      ctx.fillStyle = 'rgba(95,0,1,.08)';
+      ctx.strokeStyle = '#5F0001'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+      ctx.fillRect(t.dx + x * t.scale, t.dy + y * t.scale, cw * t.scale, ch * t.scale);
+      ctx.strokeRect(t.dx + x * t.scale, t.dy + y * t.scale, cw * t.scale, ch * t.scale);
+      ctx.restore();
+    }
     if (S.minimapVisible) renderMinimap();
     el.photoInfo.textContent = `${S.W} × ${S.H} px · масштаб ${S.zoom.toFixed(2)}×` +
       (S.waterPixels ? ` · воды ${fmt(S.waterShare, 2)} %` : '');
@@ -377,6 +391,68 @@
     for (let i = 1; i <= n; i++) {
       paintBrush({ x: a.x + (b.x - a.x) * i / n, y: a.y + (b.y - a.y) * i / n });
     }
+  }
+
+  // ------------------------------------------------------------------- обрезка
+  function toggleCrop() {
+    if (!S.image) { toast('Сначала загрузите снимок.'); return; }
+    S.crop.active = !S.crop.active;
+    S.crop.start = S.crop.end = null;
+    $('btnCrop').classList.toggle('selected-accent', S.crop.active);
+    status(S.crop.active
+      ? 'Обрезка: выделите прямоугольник на снимке ЛКМ. Повторное нажатие — отмена.'
+      : 'Обрезка отменена.');
+    renderPhoto();
+  }
+  function cropCanvas(source, x, y, w, h, whiteMask) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(source, x, y, w, h, 0, 0, w, h);
+    if (whiteMask) {
+      const d = ctx.getImageData(0, 0, w, h);
+      for (let i = 0; i < d.data.length; i += 4) {
+        const v = d.data[i + 3] > 127 ? 255 : 0;
+        d.data[i] = d.data[i + 1] = d.data[i + 2] = v;
+        d.data[i + 3] = 255;
+      }
+      ctx.putImageData(d, 0, 0);
+    }
+    return c.toDataURL('image/png');
+  }
+  async function finishCrop() {
+    const a = S.crop.start, b = S.crop.end;
+    S.crop.active = false; S.crop.start = S.crop.end = null;
+    $('btnCrop').classList.remove('selected-accent');
+    if (!a || !b) { renderPhoto(); return; }
+    const x = clamp(Math.round(Math.min(a.x, b.x)), 0, S.W - 1);
+    const y = clamp(Math.round(Math.min(a.y, b.y)), 0, S.H - 1);
+    const w = clamp(Math.round(Math.abs(b.x - a.x)), 1, S.W - x);
+    const h = clamp(Math.round(Math.abs(b.y - a.y)), 1, S.H - y);
+    if (w < 10 || h < 10) { toast('Область слишком маленькая.'); renderPhoto(); return; }
+    const base = cropCanvas(S.image, x, y, w, h, false);
+    const mask = cropCanvas(maskCanvas, x, y, w, h, true);
+    await showPhoto(base, `${S.sourceName} (обрезано)`);
+    await setMaskFromDataURL(mask);
+    const md = maskCtx.getImageData(0, 0, S.W, S.H).data;
+    S.maskNonEmpty = false;
+    for (let i = 3; i < md.length; i += 4) {
+      if (md[i] > 127) { S.maskNonEmpty = true; break; }
+    }
+    S.seed = S.seed && S.seed.x >= x && S.seed.x < x + w &&
+      S.seed.y >= y && S.seed.y < y + h
+      ? { x: S.seed.x - x, y: S.seed.y - y } : null;
+    S.colorPoints = S.colorPoints
+      .filter((p) => p.x >= x && p.x < x + w && p.y >= y && p.y < y + h)
+      .map((p) => ({ x: p.x - x, y: p.y - y }));
+    S.maskTouched = true;
+    S.result = null;
+    S.waterPixels = 0; S.waterShare = 0;
+    resetView();
+    renderPhoto();
+    status(`Снимок обрезан до ${w} × ${h} px. Пересчитайте D заново.` +
+      (S.seed ? '' : ' Створ был вне области — отметьте его снова.'));
+    toast('Снимок обрезан');
   }
 
   // ------------------------------------------------------------------ загрузка
@@ -450,6 +526,8 @@
     S.W = img.naturalWidth; S.H = img.naturalHeight;
     S.sourceName = name || 'screenshot.png';
     initMask(S.W, S.H);
+    S.crop.active = false; S.crop.start = S.crop.end = null;
+    $('btnCrop').classList.remove('selected-accent');
     S.seed = null; S.colorPoints = []; S.result = null; S.waterPixels = 0; S.waterShare = 0;
     S.overlayDataURL = null; S.maskTouched = false;
     S.undo.length = 0; S.redo.length = 0; updateHistoryButtons();
@@ -742,6 +820,10 @@
     };
     map.on('moveend zoomend', sync);
     map.on('click', (e) => {
+      if (S.map.markMode) {
+        addMapMark(e.latlng.lat, e.latlng.lng);
+        return;
+      }
       S.map.outlet = { lon: e.latlng.lng, lat: e.latlng.lat };
       renderMap();
       status(`Створ установлен: ${fmt(e.latlng.lat, 5)}° N, ` +
@@ -778,6 +860,53 @@
     const py = (sy - S.map.panDy) * geo.h / rect.height;
     return lonLatFromTile(geo.x0 + px / 256, geo.y0 + py / 256, geo.z);
   }
+  function addMapMark(lat, lon) {
+    const raw = (el.mapMarkText && el.mapMarkText.value || '').trim();
+    const label = raw || `Метка ${S.map.marks.length + 1}`;
+    S.map.marks.push({ lat, lon, label });
+    if (el.mapMarkText) el.mapMarkText.value = '';
+    renderMap();
+    status(`Метка «${label}» поставлена: ${fmt(lat, 5)}° N, ${fmt(lon, 5)}° E.`);
+  }
+  function toggleMapMark() {
+    S.map.markMode = !S.map.markMode;
+    $('btnMapMark').classList.toggle('selected-accent', S.map.markMode);
+    status(S.map.markMode
+      ? 'Режим меток включён: кликайте по карте, чтобы отмечать места. Повторное нажатие вернёт установку створа.'
+      : 'Режим меток выключен. Клик по карте снова ставит створ.');
+  }
+  function clearMapMarks() {
+    const n = S.map.marks.length;
+    S.map.marks.length = 0;
+    renderMap();
+    status(n ? 'Все метки удалены.' : 'Меток пока нет.');
+  }
+  function drawMapMarks(ctx, geo, useLeaflet) {
+    if (!S.map.marks.length) return;
+    S.map.marks.forEach((m, i) => {
+      let px, py;
+      if (useLeaflet && S.map.leaflet) {
+        const p = S.map.leaflet.latLngToContainerPoint([m.lat, m.lon]);
+        px = p.x; py = p.y;
+      } else if (geo) {
+        const t = tileXY(m.lon, m.lat, geo.z);
+        px = ((t.x - geo.x0) * 256) * el.mapCanvas.clientWidth / geo.w + S.map.panDx;
+        py = ((t.y - geo.y0) * 256) * el.mapCanvas.clientHeight / geo.h + S.map.panDy;
+      } else return;
+      ctx.save();
+      ctx.fillStyle = '#5F0001'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(px, py, 10, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Segoe UI, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(i + 2), px, py + 0.5);
+      if (m.label) {
+        ctx.font = '12px Segoe UI, sans-serif';
+        ctx.fillStyle = '#1F1A17'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+        ctx.fillText(m.label, px + 13, py - 7);
+      }
+      ctx.restore();
+    });
+  }
   function drawOutletMarker(ctx, px, py, label) {
     ctx.save();
     ctx.strokeStyle = '#ff3c3c'; ctx.fillStyle = '#ff3c3c'; ctx.lineWidth = 3;
@@ -805,6 +934,7 @@
           [S.map.outlet.lat, S.map.outlet.lon]);
         drawOutletMarker(ctx, p.x, p.y, true);
       }
+      drawMapMarks(ctx, geo, true);
       el.mapCredit.textContent = S.map.leafletCredit +
         ' · Рельеф: Mapzen / AWS Terrain Tiles' +
         (S.map.demo ? ' · демо-рельеф (нет сети)' : '');
@@ -837,6 +967,7 @@
       const py = ((t.y - geo.y0) * 256) * el.mapCanvas.clientHeight / geo.h + S.map.panDy;
       drawOutletMarker(ctx, px, py, true);
     }
+    drawMapMarks(ctx, geo, false);
     el.mapCredit.textContent = S.map.credit + (S.map.demo ? ' · демо-рельеф (нет сети)' : '');
     el.mapZoom.textContent = `z${S.map.zoom} · ${fmt(S.map.cell, 1)} м/пиксель`;
     if (S.map.minimapVisible) renderMapMinimap();
@@ -1067,7 +1198,8 @@
           ['Разрешение рельефа', fmt(m.cell_m, 1) + ' м/ячейку']
         ],
         result: r, table: r.table || [], stream: r.stream || {},
-        plot: r.plot, image: S.map.reportImage || (S.map.img ? S.map.img.src : null)
+        plot: r.plot, image: S.map.reportImage || (S.map.img ? S.map.img.src : null),
+        marks: S.map.marks.map((m) => ({ lat: m.lat, lon: m.lon, label: m.label }))
       }, 'gidrofraktal-map-report.pdf');
       status('PDF-отчёт по карте сохранён.');
     } catch (e) { status(e.message, true); toast(e.message); }
@@ -1137,6 +1269,10 @@
     $('btnZoomOut').addEventListener('click', () => zoomAt(1 / 1.25));
     $('btnZoomFit').addEventListener('click', resetView);
     $('btnMinimap').addEventListener('click', toggleMinimap);
+    $('btnCrop').addEventListener('click', toggleCrop);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && S.crop.active) toggleCrop();
+    });
     document.querySelectorAll('[data-rotate]').forEach((b) =>
       b.addEventListener('click', () => rotateView(b.dataset.rotate)));
 
@@ -1144,6 +1280,14 @@
     el.photoCanvas.addEventListener('pointerdown', (e) => {
       if (!S.image) return;
       const rect = el.photoCanvas.getBoundingClientRect();
+      if (S.crop.active) {
+        const pt = screenToImage(e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
+        S.crop.start = { x: clamp(pt.x, 0, S.W), y: clamp(pt.y, 0, S.H) };
+        S.crop.end = { ...S.crop.start };
+        el.photoCanvas.setPointerCapture(e.pointerId);
+        renderPhoto();
+        return;
+      }
       const px = e.clientX - rect.left, py = e.clientY - rect.top;
       const pt = screenToImage(px, py, rect.width, rect.height);
       if (S.tool === 'pan') {
@@ -1169,6 +1313,15 @@
     el.photoCanvas.addEventListener('pointermove', (e) => {
       const rect = el.photoCanvas.getBoundingClientRect();
       const px = e.clientX - rect.left, py = e.clientY - rect.top;
+      if (S.crop.active) {
+        if (S.crop.start) {
+          const pt = screenToImage(px, py, rect.width, rect.height);
+          S.crop.end = { x: clamp(pt.x, 0, S.W), y: clamp(pt.y, 0, S.H) };
+          renderPhoto();
+        }
+        el.cursorInfo.textContent = `x: ${Math.round(S.crop.end ? S.crop.end.x : 0)}, y: ${Math.round(S.crop.end ? S.crop.end.y : 0)}`;
+        return;
+      }
       if (S.image) {
         const pt = screenToImage(px, py, rect.width, rect.height);
         el.cursorInfo.textContent = `x: ${Math.round(pt.x)}, y: ${Math.round(pt.y)}`;
@@ -1187,6 +1340,7 @@
       }
     });
     const endPhotoPointer = () => {
+      if (S.crop.active && S.crop.start) { finishCrop(); return; }
       S.painting = false; S.panning = false; S.lastPaint = null; S.lastPointer = null;
       el.photoWrap.classList.remove('panning');
     };
@@ -1232,6 +1386,8 @@
     $('btnMapZoomIn').addEventListener('click', () => mapZoomBy(1));
     $('btnMapZoomOut').addEventListener('click', () => mapZoomBy(-1));
     $('btnMapMinimap').addEventListener('click', toggleMapMinimap);
+    $('btnMapMark').addEventListener('click', toggleMapMark);
+    $('btnMapClearMarks').addEventListener('click', clearMapMarks);
     $('btnMapCatch').addEventListener('click', mapAnalyze);
     $('btnMapDim').addEventListener('click', mapAnalyze);
     $('btnMapPdf').addEventListener('click', mapSavePdf);
@@ -1289,6 +1445,7 @@
       } else {
         const rect = el.mapCanvas.getBoundingClientRect();
         const g = mapGeoAt(e.clientX - rect.left, e.clientY - rect.top);
+        if (S.map.markMode) { addMapMark(g.lat, g.lon); return; }
         S.map.outlet = { lon: g.lon, lat: g.lat };
         renderMap();
         status(`Створ установлен: ${fmt(g.lat, 5)}° N, ${fmt(g.lon, 5)}° E. Нажмите «Построить водосбор».`);
@@ -1327,6 +1484,7 @@
 
     $('modalClose').addEventListener('click', closeModal);
     $('modalOk').addEventListener('click', closeModal);
+    $('btnHelpPdf').addEventListener('click', downloadInstructionPdf);
     el.modal.addEventListener('click', (e) => { if (e.target === el.modal) closeModal(); });
 
     document.addEventListener('keydown', (e) => {
@@ -1355,6 +1513,144 @@
     renderMinimap();
     status(S.minimapVisible ? 'Карта просмотра открыта.' : 'Карта просмотра скрыта.');
   }
+  function escHtml(value) {
+    return String(value === undefined || value === null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  const TIP_LABELS = {
+    'open': 'Файл → Загрузить снимок', 'close': 'Файл → Закрыть снимок',
+    'save-mask': 'Файл → Сохранить маску (PNG)', 'save-report': 'Файл → Сохранить отчёт (PDF)',
+    'undo': 'Правка → Отменить', 'redo': 'Правка → Повторить',
+    'clear-mask': 'Правка → Очистить маску', 'reset-view': 'Правка → Сбросить масштаб',
+    'view-overlay': 'Вид → Снимок + маска', 'view-image': 'Вид → Только снимок',
+    'view-mask': 'Вид → Только маска', 'toggle-minimap': 'Вид → Карта просмотра',
+    'zoom-fit': 'Вид → Показать всё', 'tab-photo': 'Переход → Фотоснимок',
+    'tab-map': 'Переход → Карта и водосбор', 'help': 'Справка → Инструкция',
+    'about': 'Справка → О программе',
+    'rot1': '⟲ 90°', 'rot3': '⟳ 90°', 'rot2': '180°', 'fliph': '⇋ отразить', 'flipv': '⇵ отразить',
+    'btnLoad': '📂 Загрузить снимок', 'btnLoadBig': '📂 Выбрать файл',
+    'btnDemoImage': 'Попробовать на примере', 'btnCrop': '✂ Обрезать снимок',
+    'btnSegment': '🌊 Выделить реку', 'btnAnalyze': '📐 Рассчитать D',
+    'btnSaveMask': '💾 Сохранить маску (PNG)', 'btnSaveReport': '📄 Сохранить отчёт (PDF)',
+    'btnUndo': '↶ Назад', 'btnRedo': '↷ Вперёд', 'btnZoomIn': '🔍+ (снимок)',
+    'btnZoomOut': '🔍− (снимок)', 'btnZoomFit': '⛶ Всё', 'btnMinimap': '🗺 Карта (снимок)',
+    'photo': 'Вкладка «Фотоснимок»', 'map': 'Вкладка «Карта и водосбор»',
+    'btnMapSearch': '🔎 Найти', 'btnMapHome': '⌂', 'btnMapZoomIn': '🔍+ (карта)',
+    'btnMapZoomOut': '🔍− (карта)', 'btnMapMinimap': '🗺 Мини-карта',
+    'btnMapMark': '📌 Метка', 'btnMapClearMarks': '🗑 Метки',
+    'btnMapCatch': '🌊 Построить водосбор', 'btnMapDim': '📐 Рассчитать D (карта)',
+    'btnMapPdf': '💾 Отчёт PDF (карта)', 'btnHelpPdf': '📄 Скачать инструкцию (PDF)',
+    'modalClose': '✕', 'modalOk': 'Понятно',
+    'method': 'Способ выделения', 'tol': 'Допуск по цвету', 'tolNum': 'Допуск (число)',
+    'largest': 'Только крупнейшая область', 'tool': 'Инструмент мыши',
+    'brush': 'Размер ластика/кисти', 'brushNum': 'Размер (число)',
+    'object': 'Объект расчёта', 'viewMode': 'Вид', 'maxDivs': 'Число делений сетки',
+    'maxDivsNum': 'Число делений (число)', 'scaleText': 'Масштаб, м/пиксель',
+    'mapSource': 'Слой карты', 'mapRelief': 'Рельеф',
+    'mapLat': 'Широта', 'mapLon': 'Долгота', 'mapMarkText': 'Подпись метки'
+  };
+  function nl2br(text) {
+    return escHtml(text).replace(/\n/g, '<br>');
+  }
+  function instructionHtml() {
+    const buttonRows = Object.keys(TIPS).map((k) =>
+      `<tr><td>${escHtml(TIP_LABELS[k] || k)}</td><td>${nl2br(TIPS[k])}</td></tr>`).join('');
+    const fieldRows = Object.keys(FIELD_TIPS).map((k) =>
+      `<tr><td>${escHtml(TIP_LABELS[k] || k)}</td><td>${nl2br(FIELD_TIPS[k])}</td></tr>`).join('');
+    return `
+      <h2>1. Что делает Гидрофрактал</h2>
+      <p>Программа оценивает фрактальную размерность реки по спутниковому снимку или по карте
+      и рельефу. Снимок разбивается квадратной сеткой n×n; сторона ячейки ε = side/n,
+      N(ε) — число клеток, через которые проходит линия реки. Точки (log 1/ε, log N)
+      ложатся на прямую, её наклон — размерность блуждания h, а итоговая размерность
+      <b>D = 1 + h/2</b>. По D оцениваются средний многолетний расход Qср, коэффициенты
+      вариации Cv и асимметрии Cs и кривая обеспеченности Пирсона III типа.</p>
+      <h2>2. Работа со снимком</h2>
+      <ol>
+        <li><b>Загрузите снимок</b> кнопкой «📂 Загрузить снимок» или перетащите файл.
+          Поддерживаются JPG, PNG, TIFF и BMP, включая 16-битные TIFF — они нормализуются автоматически.</li>
+        <li>Инструментом «🖱 Точка расхода (створ)» кликните <b>по руслу</b>. Цвет точки становится
+          эталоном воды, а сама точка — створом: выше неё должна остаться измеряемая часть реки.</li>
+        <li>Подберите «Допуск по цвету» (обычно 50–80) и нажмите «🌊 Выделить реку».
+          Зелёным покажется маска воды.</li>
+        <li><b>Важно.</b> Ластиком сотрите всё, что ниже створа. В расчёте должна остаться
+          только область <b>выше</b> створа; иначе D будет неверным.</li>
+        <li>Если снимок нужно обрезать, нажмите «✂ Обрезать снимок», выделите прямоугольник ЛКМ.
+          Изображение и маска обрежутся вместе; створ и доп. точки сдвинутся. D придётся пересчитать.</li>
+        <li>Нажмите «📐 Рассчитать D». Появятся D = 1 + h/2, R², таблица n/ε/N, график log–log
+          и оценка Qср, Cv, Cs.</li>
+        <li>«💾 Сохранить маску (PNG)» — чёрная река на белом фоне с метаданными
+          (размер, 300 dpi, масштаб, источник, дата). «📄 Сохранить отчёт (PDF)» — полный отчёт.</li>
+        <li>После любой правки маски нажмите «Рассчитать D» заново.</li>
+      </ol>
+      <h2>3. Параметры и их влияние</h2>
+      <ul>
+        <li><b>Способ выделения.</b> «По цвету точки (HSV)» сравнивает тон, насыщенность и яркость
+          с эталонной точкой; «Тёмная вода» берёт всё темнее точки по каналу V; «Комбинация»
+          объединяет правила (ИЛИ) — воды больше, но риск захватить тени выше.</li>
+        <li><b>Допуск по цвету.</b> 20–40 — узкая чистая маска, но русло может разорваться;
+          90–130 — сплошное русло, но захватываются тени и крыши. Разрывы завышают N(ε)
+          на мелких ячейках и «плывёт» наклон прямой.</li>
+        <li><b>Только крупнейшая область.</b> Отсекает случайные тёмные пятна; без галочки
+          посторонние островки раздувают N(ε) и завышают D.</li>
+        <li><b>Инструменты.</b> Точка — створ и эталон цвета; ластик — удалить лишнее и убрать
+          всё ниже створа; кисть — дорисовать пропущенную воду; «Двигать» — панорамирование.</li>
+        <li><b>Размер кисти/ластика</b> задаётся в пикселях исходного снимка: 10–20 — тонкая работа,
+          40–80 — быстрая зачистка больших пятен.</li>
+        <li><b>Объект расчёта.</b> Скелет — ось реки, самая честная оценка D; граница — контур маски,
+          D чуть выше; заполненная маска даёт D→2, это размерность области, а не линии.</li>
+        <li><b>Число делений сетки.</b> По умолчанию 60, шаг n += 1; 40–80 — разумный диапазон.
+          Слишком много делений упирается в число пикселей реки и слегка занижает наклон.</li>
+        <li><b>Колесо мыши</b> масштабирует холст до 12× с привязкой к курсору; Ctrl+Z / Ctrl+Y —
+          отмена и повтор; кнопки ориентации поворачивают снимок вместе с маской и точками.</li>
+      </ul>
+      <h2>4. Карта и водосбор</h2>
+      <ol>
+        <li>Откройте вкладку «🗺 Карта и водосбор». Подложка загружается через Leaflet:
+          Esri, при недоступности — Google Satellite и OpenStreetMap; для топо — OpenTopoMap.</li>
+        <li>Панорамируйте карту мышью, масштабируйте колесом или кнопками 🔍+/🔍−.
+          Кнопка «⌂» возвращает к Санкт-Петербургу.</li>
+        <li>Поля «Широта» / «Долгота» и кнопка «🔎 Найти» <b>только центрируют карту</b>,
+          створ не ставят. Чтобы задать створ, кликните по руслу.</li>
+        <li>Кнопка «🌊 Построить водосбор» строит: синий — предварительная область,
+          оливковый — уточнённый водосбор, коричневый — речная сеть, бордовый — главное русло.
+          Дополнительно показывается мини-карта и порядок реки Стралера.</li>
+        <li>В режиме «📌 Метка» клики по подложке ставят пронумерованные заметки с подписью
+          из поля «Подпись метки»; «🗑 Метки» удаляет их. Метки попадают в PDF-отчёт.</li>
+        <li>«📐 Рассчитать D» считает D по главному руслу. «💾 Отчёт PDF» формирует сводный отчёт.</li>
+      </ol>
+      <h2>5. Отчёт</h2>
+      <p>PDF повторяет эталон: титул, разделы I–VII, таблицы 1–5, рисунки 1–4, формулы (1)–(11)
+      с пояснениями к каждому символу, серые пояснения под таблицами и альбомная страница
+      с вероятностной клетчаткой. Формат A4, Times New Roman, нумерация страниц.
+      На GitHub Pages «Сохранить отчёт» открывает окно печати браузера — выберите
+      «Сохранить как PDF».</p>
+      <h2>6. Что именно делает каждая кнопка и поле</h2>
+      <table>
+        <thead><tr><th>Элемент</th><th>Действие и влияние</th></tr></thead>
+        <tbody>${buttonRows}${fieldRows}</tbody>
+      </table>`;
+  }
+  function downloadInstructionPdf() {
+    const win = window.open('', '_blank');
+    if (!win) { toast('Разрешите всплывающие окна для сохранения инструкции.'); return; }
+    win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8">
+      <title>Инструкция — Гидрофрактал</title><style>
+      @page { size: A4; margin: 2cm; @bottom-center { content: counter(page); font-family: "Times New Roman"; } }
+      body { font-family: "Times New Roman", Times, serif; font-size: 12pt; line-height: 1.4; color: #000; }
+      h1 { font-size: 18pt; text-align: center; color: #5F0001; }
+      h2 { font-size: 14pt; color: #5F0001; margin-top: 16pt; }
+      p, li { text-align: justify; }
+      table { border-collapse: collapse; width: 100%; font-size: 9pt; margin-top: 8pt; }
+      th, td { border: 1px solid #666; padding: 3pt 5pt; vertical-align: top; }
+      th { background: #F4DDCF; }
+      @media screen { body { max-width: 21cm; margin: 1cm auto; } }
+      </style></head><body><h1>Как работать с Гидрофракталом</h1>${instructionHtml()}</body></html>`);
+    win.document.close();
+    setTimeout(() => { try { win.focus(); win.print(); } catch (e) { /* ignore */ } }, 500);
+  }
+
   function menuAction(act) {
     const actions = {
       open: () => el.fileInput.click(),
@@ -1371,19 +1667,7 @@
       'zoom-fit': resetView,
       'tab-photo': () => switchTab('photo'),
       'tab-map': () => switchTab('map'),
-      help: () => openModal('Как работать с Гидрофракталом', `
-        <ol>
-          <li>Загрузите спутниковый снимок реки (JPG, PNG, TIFF, в т.ч. 16-битный).</li>
-          <li>Инструментом «Точка расхода» кликните по руслу — это створ, цвет точки задаёт эталон воды.</li>
-          <li>Подберите «Допуск по цвету» и нажмите «Выделить реку». Зелёным покажется маска воды.</li>
-          <li><b>Важно:</b> ластиком сотрите всё, что ниже створа. В расчёте должна остаться только область выше створа.</li>
-          <li>Нажмите «Рассчитать D». Появится D = 1 + h/2, R², таблица, график и оценка характеристик стока.</li>
-          <li>«Сохранить маску (PNG)» — чёрная река на белом фоне с метаданными; «Сохранить отчёт (PDF)» — полный отчёт.</li>
-        </ol>
-        <p>Колесо мыши масштабирует холст до 12×, инструмент «Двигать» панорамирует.
-        Ctrl+Z / Ctrl+Y — отмена и повтор. Кнопки ориентации поворачивают снимок вместе с маской и створом.</p>
-        <p>На вкладке «Карта и водосбор» кликните по реке, нажмите «Построить водосбор» — сервер скачает рельеф,
-        выполнит D8-гидрологию и рассчитает D по главному руслу.</p>`),
+      help: () => openModal('Как работать с Гидрофракталом', instructionHtml()),
       about: () => openModal('О программе', `
         <p><b>Гидрофрактал</b> — веб-версия настольного приложения для оценки фрактальной размерности рек.</p>
         <p>Сегментация воды в HSV, скелет/контур маски, канторовский метод (D = 1 + h/2), оценка Cv, Cs и кривой обеспеченности по Пирсону III типа — все алгоритмы перенесены из десктопного приложения без изменений.</p>
@@ -1413,17 +1697,7 @@
     'save-mask': `Сохраняет маску реки как чёрно-белое PNG:
 белый = вода, чёрный = фон. Можно использовать как
 исходные данные в другой программе (QGIS и т.п.).`,
-    'save-report': `PDF (A4, односторонняя печать):
-  1) параметры расчёта и результаты (таблицы 1–2) + график;
-  2) таблица 3 — полные измерения (n, ε, N);
-  3) снимок с маской и створом (рисунок 2), маска (рисунок 3);
-  4) статистические характеристики стока (Qср, Cv, Cs), таблица 4;
-  5) теоретическая кривая обеспеченности на АЛЬБОМНОЙ странице, рисунок 4;
-  6) ординаты кривой (таблица 5) и порядок вычисления.
-Оформление: Times New Roman, поля 3/1,5/2/2 см,
-межстрочный интервал 1,5, основной текст 14 pt,
-таблицы 12 pt, примечания 10 pt, текст по ширине,
-абзацный отступ 1,25 см, страницы пронумерованы.`,
+    'save-report': 'Формирует сводный отчёт в PDF.',
     'undo': 'Отменить последнее изменение маски (Ctrl+Z).',
     'redo': 'Повторить отменённое изменение маски (Ctrl+Y).',
     'clear-mask': 'Полностью очистить выделение воды. После этого нужно заново выделить реку.',
@@ -1446,6 +1720,11 @@
 После загрузки кликните по руслу реки инструментом «Точка».`,
     'btnLoadBig': `Загружает снимок (JPG, PNG, TIFF…).
 16-битные TIFF нормализуются автоматически.`,
+    'btnCrop': `Режим обрезки снимка.
+Нажмите кнопку, затем выделите прямоугольник ЛКМ на снимке —
+обрезке подвергаются и изображение, и текущая маска.
+Точка створа и доп. точки сдвигаются вместе с областью.
+D после обрезки нужно пересчитать заново.`,
     'btnDemoImage': `Загрузить демонстрационный снимок реки.
 Удобно попробовать все этапы без поиска файла:
 створ → сегментация → ластик → расчёт D.`,
@@ -1466,10 +1745,7 @@
     'btnSaveMask': `Сохраняет маску реки как чёрно-белое PNG:
 белый = вода, чёрный = фон. Можно использовать как
 исходные данные в другой программе (QGIS и т.п.).`,
-    'btnSaveReport': `Открывает окно печати браузера; выберите «Сохранить как PDF».
-Отчёт A4: разделы I–VII, таблицы 1–5, рисунки 1–4,
-формулы (1)–(11) с пояснениями, альбомная клетчатка
-кривой обеспеченности, нумерация страниц.`,
+    'btnSaveReport': 'Формирует сводный отчёт в PDF.',
     'btnUndo': 'Отменить последнее движение кисти или ластика (Ctrl+Z).',
     'btnRedo': 'Повторить отменённое действие (Ctrl+Y).',
     'btnZoomIn': `Увеличить масштаб (×1.25) с привязкой к центру.
@@ -1495,6 +1771,12 @@
     'photo': 'Вкладка анализа спутникового снимка.',
     'map': 'Вкладка карты и водосбора.',
     // Кнопки карты
+    'btnMapMark': `Режим заметок на карте: включите его и кликайте по подложке,
+чтобы поставить пронумерованные метки. Подпись берется из поля
+«Подпись метки». Повторное нажатие выключает режим — после этого
+клик по карте снова ставит створ.`,
+    'btnMapClearMarks': 'Удаляет все проставленные на карте метки. Створ и водосбор не трогает.',
+    'btnHelpPdf': 'Открывает окно печати: выберите «Сохранить как PDF», чтобы скачать полную инструкцию.',
     'btnMapSearch': `Ищет место по введённым координатам и центрирует карту.
 Это только ПЕРЕХОД к месту: маркер створа не ставится,
 водосбор и D не пересчитываются. Чтобы задать створ,
@@ -1515,9 +1797,7 @@
     'btnMapDim': `Считает D канторовским методом по главному руслу
 построенного водосбора. Таблица n/ε/N и график log–log
 появляются справа; по D оцениваются Qср, Cv и Cs.`,
-    'btnMapPdf': `Формирует сводный PDF-отчёт по карте: те же разделы I–VII,
-таблицы и рисунки эталона. На рисунке 2 сохраняются
-все слои карты, включая синюю предварительную область водосбора.`,
+    'btnMapPdf': 'Формирует сводный отчёт в PDF.',
     'modalClose': 'Закрыть окно.',
     'modalOk': 'Понятно, закрыть окно.'
   };
@@ -1597,6 +1877,7 @@ N(ε) на малых размерах ячеек и завышают D.
 Если оставить пустым — будет «not set».`,
     mapSource: 'Подложка карты через Leaflet: спутник Esri/Google или топокарта OpenTopoMap. Leaflet сам переключает резервные источники при ошибках тайлов.',
     mapRelief: 'Показать отмывку рельефа по AWS Terrain Tiles. Она же используется для расчёта водосбора и главного русла.',
+    mapMarkText: 'Подпись для следующей метки на карте. Оставьте пустым — будет автоматическая нумерация.',
     mapLat: 'Широта центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.',
     mapLon: 'Долгота центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.'
   };
