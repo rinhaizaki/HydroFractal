@@ -29,7 +29,7 @@
   const PC_DEM_TILES = 'https://planetarycomputer.microsoft.com/api/data/v1/collections/cop-dem-glo-30/items/{item}/tiles/WebMercatorQuad/{z}/{x}/{y}@1x?assets=data&rescale=-1000,4000&format=png';
   const NASADEM_TILES = 'https://planetarycomputer.microsoft.com/api/data/v1/collections/nasadem/items/{item}/tiles/WebMercatorQuad/{z}/{x}/{y}@1x?assets=elevation&rescale=-100,4000&format=png';
   const TERRARIUM_URL = 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png';
-  const TERRAIN_CREDIT = 'ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM), резерв — Terrarium';
+  const TERRAIN_CREDIT = 'ЦМР: USGS EarthExplorer (NASADEM/SRTM), резерв — Copernicus DEM GLO-30, Terrarium';
   const sentinelItems = new Map();
   function findSentinelItem(lon, lat) {
     const key = Math.round(lon * 4) + ':' + Math.round(lat * 4);
@@ -697,10 +697,10 @@
     };
     const jobs = tiles.map(([tx, ty]) => {
       const terrainUrl = TERRARIUM_URL.replace('{z}', demZoom).replace('{x}', tx).replace('{y}', ty);
-      return fetchImageCors(pcDemUrl(demZoom, tx, ty))
-        .then((img) => decode(img, -1000, 4000, 'cop-dem-glo-30', false))
-        .catch(() => fetchImageCors(nasaDemUrl(demZoom, tx, ty))
-          .then((img) => decode(img, -100, 4000, 'nasadem', false)))
+      return fetchImageCors(nasaDemUrl(demZoom, tx, ty))
+        .then((img) => decode(img, -100, 4000, 'usgs-nasadem', false))
+        .catch(() => fetchImageCors(pcDemUrl(demZoom, tx, ty))
+          .then((img) => decode(img, -1000, 4000, 'cop-dem-glo-30', false)))
         .catch(() => fetchImageCors(terrainUrl)
           .then((img) => decode(img, 0, 1, 'terrarium', true)))
         .catch(() => null);
@@ -1279,11 +1279,18 @@
         : fromParams('Масштаб карты', '')
     ].filter(Boolean) : [];
     const reportMarks = mapReport ? (payload.marks || []) : (payload.photo_marks || []);
+    const fmtCoord = (v, nd = 5) => (v === undefined || v === null || Number.isNaN(Number(v))
+      ? '—' : Number(v).toFixed(nd).replace('.', ','));
+    const outletCoord = mapReport && outlet && outlet.lat !== undefined
+      ? ` (${fmtCoord(outlet.lat)}° N, ${fmtCoord(outlet.lon)}° E)`
+      : (payload.seed ? ` (x=${Math.round(payload.seed.x)}, y=${Math.round(payload.seed.y)})` : '');
     const legendItems = [
-      { color: '#FF3C3C', label: 'маркер «1» — створ', kind: 'dot' },
+      { color: '#FF3C3C', label: `маркер «1» — створ${outletCoord}`, kind: 'dot' },
       ...reportMarks.map((m, i) => ({
         color: m.color || '#5F0001',
-        label: `${mapReport ? i + 2 : 'M' + (i + 1)} — ${m.label || 'без подписи'}`,
+        label: mapReport
+          ? `${i + 2} — ${m.label || 'без подписи'} (${fmtCoord(m.lat)}° N, ${fmtCoord(m.lon)}° E)`
+          : `M${i + 1} — ${m.label || 'без подписи'} (x=${Math.round(m.x)}, y=${Math.round(m.y)} px)`,
         kind: 'dot'
       })),
       { color: '#28DC50', label: 'линия маски реки', kind: 'line' }
@@ -1293,38 +1300,119 @@
     ).join('') + '</div>';
     const coordHtml = coordLines.length
       ? `<p class="note coord-note">${escapeHtml(coordLines.join(' · '))}</p>` : '';
-    const stampImage = (src, lines) => {
-      if (!src || !lines.length) return Promise.resolve(src);
+    const decorateScene = (src) => {
+      if (!src) return Promise.resolve(src);
       return loadImage(src).then((img) => {
         const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
         const c = canvasContext(w, h);
-        c.ctx.drawImage(img, 0, 0);
+        const ctx = c.ctx;
+        ctx.drawImage(img, 0, 0);
         const fs = Math.max(12, Math.round(w / 72));
-        c.ctx.font = `${fs}px "Times New Roman", serif`;
-        const lh = fs + 5, pad = 8;
-        const tw = Math.max(...lines.map((line) => c.ctx.measureText(line).width));
-        const bw = Math.min(w - 12, tw + 2 * pad);
-        const bh = lines.length * lh + pad;
-        const bx = 6, by = Math.max(6, h - bh - 6);
-        c.ctx.fillStyle = 'rgba(255,255,255,0.86)';
-        c.ctx.fillRect(bx, by, bw, bh);
-        c.ctx.strokeStyle = '#733933'; c.ctx.lineWidth = 1;
-        c.ctx.strokeRect(bx, by, bw, bh);
-        c.ctx.fillStyle = '#000';
-        lines.forEach((line, i) => c.ctx.fillText(line, bx + pad, by + pad + i * lh + fs));
-        // Стрелка севера — обязательный элемент координатной метки снимка.
-        c.ctx.fillStyle = 'rgba(255,255,255,0.86)';
-        c.ctx.fillRect(w - 44, 6, 38, 46);
-        c.ctx.strokeRect(w - 44, 6, 38, 46);
-        c.ctx.fillStyle = '#733933';
-        c.ctx.beginPath(); c.ctx.moveTo(w - 25, 12); c.ctx.lineTo(w - 32, 32);
-        c.ctx.lineTo(w - 25, 27); c.ctx.lineTo(w - 18, 32); c.ctx.closePath(); c.ctx.fill();
-        c.ctx.font = `bold ${fs}px "Times New Roman", serif`;
-        c.ctx.fillText('N', w - 31, 46);
+        const marker = (x, y, color, label) => {
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+          ctx.save();
+          ctx.lineJoin = ctx.lineCap = 'round';
+          ctx.fillStyle = color; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+          ctx.beginPath(); ctx.arc(x, y, Math.max(7, fs * 0.55), 0, 2 * Math.PI);
+          ctx.fill(); ctx.stroke();
+          const r = Math.max(12, fs);
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(x - r, y); ctx.lineTo(x + r, y);
+          ctx.moveTo(x, y - r); ctx.lineTo(x, y + r);
+          ctx.stroke();
+          ctx.font = `bold ${fs}px "Times New Roman", serif`;
+          ctx.lineWidth = 4; ctx.strokeStyle = '#fff';
+          ctx.strokeText(label, x + r + 2, y - r * 0.6);
+          ctx.fillStyle = color;
+          ctx.fillText(label, x + r + 2, y - r * 0.6);
+          ctx.restore();
+        };
+        if (mapReport) {
+          const project = (lat, lon) => {
+            if (!center || center.lat === undefined || center.lon === undefined) return null;
+            const z = Number(geo.zoom) || 11, scale = 256 * Math.pow(2, z);
+            const world = (la, lo) => [
+              (lo + 180) / 360 * scale,
+              (0.5 - Math.log(Math.tan(Math.PI / 4 + la * Math.PI / 360)) / (2 * Math.PI)) * scale
+            ];
+            const [cx, cy] = world(Number(center.lat), Number(center.lon));
+            const [px, py] = world(Number(lat), Number(lon));
+            return [px - cx + w / 2, py - cy + h / 2];
+          };
+          if (outlet && outlet.lat !== undefined && outlet.lon !== undefined) {
+            const p = project(outlet.lat, outlet.lon);
+            if (p) marker(p[0], p[1], '#FF3C3C', '1');
+          }
+          (payload.marks || []).forEach((m, i) => {
+            const p = project(m.lat, m.lon);
+            if (p) marker(p[0], p[1], m.color || '#5F0001', String(i + 2));
+          });
+          const scaleX = w / Math.max(1, Number(payload.width) || w);
+          const scaleY = h / Math.max(1, Number(payload.height) || h);
+          (payload.drawings || []).forEach((d) => {
+            if (!d.points || d.points.length < 2) return;
+            ctx.save();
+            ctx.strokeStyle = d.color || '#5F0001';
+            ctx.lineWidth = Math.max(2, 3 * scaleX);
+            ctx.lineJoin = ctx.lineCap = 'round';
+            ctx.beginPath();
+            d.points.forEach((pt, i) => {
+              const p = project(pt.lat, pt.lon);
+              if (!p) return;
+              if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+            });
+            ctx.stroke(); ctx.restore();
+          });
+        } else {
+          const scaleX = w / Math.max(1, Number(payload.width) || w);
+          const scaleY = h / Math.max(1, Number(payload.height) || h);
+          (payload.photo_drawings || []).forEach((d) => {
+            if (!d.points || d.points.length < 2) return;
+            ctx.save();
+            ctx.strokeStyle = d.color || '#5F0001';
+            ctx.lineWidth = Math.max(2, 3 * scaleX);
+            ctx.lineJoin = ctx.lineCap = 'round';
+            ctx.beginPath();
+            d.points.forEach((pt, i) => {
+              if (i === 0) ctx.moveTo(pt.x * scaleX, pt.y * scaleY);
+              else ctx.lineTo(pt.x * scaleX, pt.y * scaleY);
+            });
+            ctx.stroke(); ctx.restore();
+          });
+          (payload.photo_marks || []).forEach((m, i) =>
+            marker(Number(m.x) * scaleX, Number(m.y) * scaleY,
+              m.color || '#5F0001', 'M' + (i + 1)));
+          if (payload.seed) marker(Number(payload.seed.x) * scaleX,
+            Number(payload.seed.y) * scaleY, '#FF3C3C', '1');
+        }
+        // Координатная меткаsurface поверх всех_markов.
+        if (coordLines.length) {
+          const lh = fs + 5, pad = 8;
+          const tw = Math.max(...coordLines.map((line) => ctx.measureText(line).width));
+          const bw = Math.min(w - 12, tw + 2 * pad);
+          const bh = coordLines.length * lh + pad;
+          const bx = 6, by = Math.max(6, h - bh - 6);
+          ctx.fillStyle = 'rgba(255,255,255,0.86)';
+          ctx.fillRect(bx, by, bw, bh);
+          ctx.strokeStyle = '#733933'; ctx.lineWidth = 1;
+          ctx.strokeRect(bx, by, bw, bh);
+          ctx.fillStyle = '#000';
+          coordLines.forEach((line, i) => ctx.fillText(line, bx + pad, by + pad + i * lh + fs));
+          const nx = w - 44, ny = 6;
+          ctx.fillStyle = 'rgba(255,255,255,0.86)';
+          ctx.fillRect(nx, ny, 38, 46);
+          ctx.strokeRect(nx, ny, 38, 46);
+          ctx.fillStyle = '#733933';
+          ctx.beginPath(); ctx.moveTo(nx + 19, ny + 6); ctx.lineTo(nx + 12, ny + 26);
+          ctx.lineTo(nx + 19, ny + 21); ctx.lineTo(nx + 26, ny + 26); ctx.closePath(); ctx.fill();
+          ctx.font = `bold ${fs}px "Times New Roman", serif`;
+          ctx.fillText('N', nx + 15, ny + 46);
+        }
         return c.canvas.toDataURL('image/png');
       }).catch(() => src);
     };
-    return Promise.all([invertMaskDataUrl(payload.mask), stampImage(payload.image, coordLines)]).then(([maskImg, sceneImg]) => {
+    return Promise.all([invertMaskDataUrl(payload.mask), decorateScene(payload.image)]).then(([maskImg, sceneImg]) => {
       const win = window.open('', '_blank');
       if (!win) throw new Error('Разрешите всплывающие окна для сохранения отчёта.');
       const img = (src, cap) => src ? `<div class="figure"><img src="${src}" alt=""><div class="fig-cap">${cap}</div></div>` : '';
@@ -1350,10 +1438,11 @@
         .figure { text-align: center; margin: 6pt 0; }
         .figure img { max-width: 100%; max-height: 15cm; }
         .fig-cap { text-align: center; margin-top: 4pt; font-size: 14pt; }
-        .fig-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 3pt 12pt;
-          font-size: 10pt; text-indent: 0; margin: 4pt 0 2pt; }
-        .fig-legend span { white-space: nowrap; }
-        .fig-legend i { display: inline-block; width: 10pt; height: 10pt; margin-right: 4pt;
+        .fig-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 3pt 10pt;
+          font-size: 10pt; text-indent: 0; margin: 6pt auto 4pt; padding: 5pt 7pt;
+          border: 1px solid #888; max-width: 16.3cm; }
+        .fig-legend span { text-align: left; }
+        .fig-legend i { display: inline-block; width: 10pt; height: 10pt; margin-right: 5pt;
           border: 1px solid #000; vertical-align: -1pt; }
         .fig-legend i.dot { border-radius: 50%; }
         .fig-legend i.line { width: 16pt; height: 2pt; border: 0; vertical-align: 3pt; }

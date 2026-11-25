@@ -47,6 +47,7 @@
     overlayDataURL: null, maskTouched: false, cropped: false,
     crop: { active: false, start: null, end: null, ready: false, handle: null, dragOrigin: null },
     photoMarks: [], photoMarkMode: false, photoMarkColor: '#5F0001',
+    photoDrawings: [], photoDrawMode: false, photoDrawCurrent: null,
     mapTabLoaded: false, activeTab: 'photo',
     map: {
       lon: 30.33510, lat: 59.93428, zoom: 11, source: 'sentinel', relief: false,
@@ -54,7 +55,7 @@
       ndwiLayer: null, ndwiOn: false,
       waterLayer: null, waterImageLayer: null, markLayer: null, waterObjects: [],
       img: null, geo: null, outlet: null, result: null, info: null,
-      credit: 'Sentinel-2 L2A: Copernicus / Planetary Computer · ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM), резерв — Terrarium', demo: false, cell: 0,
+      credit: 'Sentinel-2 L2A: Copernicus / Planetary Computer · ЦМР: USGS EarthExplorer (NASADEM/SRTM), резерв — Copernicus DEM, Terrarium', demo: false, cell: 0,
       panDx: 0, panDy: 0, dragStart: null, moved: false, loading: false,
       tiles: [], reliefImg: null, overlayImg: null, reportImage: null, mask: null, width: 0, height: 0,
       minimapVisible: false, miniKey: '', miniResp: null,
@@ -347,6 +348,34 @@
       ? 'Метки на фото: кликайте по снимку, чтобы поставить метку.'
       : 'Режим меток на фото выключен.');
   }
+  function drawPhotoAnnotations(ctx, t) {
+    const lines = S.photoDrawCurrent
+      ? S.photoDrawings.concat([{ color: S.photoMarkColor, points: S.photoDrawCurrent }])
+      : S.photoDrawings;
+    ctx.save();
+    ctx.lineJoin = ctx.lineCap = 'round';
+    lines.forEach((line) => {
+      if (!line.points || line.points.length < 2) return;
+      ctx.strokeStyle = line.color || S.photoMarkColor;
+      ctx.lineWidth = Math.max(2, 3 * t.scale);
+      ctx.beginPath();
+      line.points.forEach((pt, i) => {
+        const q = imageToScreen(pt, t);
+        if (i === 0) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y);
+      });
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+  function togglePhotoDraw() {
+    S.photoDrawMode = !S.photoDrawMode;
+    S.photoDrawCurrent = null;
+    $('btnPhotoDrawFree').classList.toggle('selected-accent', S.photoDrawMode);
+    status(S.photoDrawMode
+      ? 'Рисование заметок на снимке: ведите линию ЛКМ. Точки привязаны к пикселям снимка.'
+      : 'Рисование заметок выключено.');
+    renderPhoto();
+  }
   function drawPhotoMarkers(ctx, t) {
     const marker = (pt, color, label) => {
       const p = imageToScreen(pt, t);
@@ -390,6 +419,7 @@
       }
     }
     ctx.restore();
+    drawPhotoAnnotations(ctx, t);
     drawPhotoMarkers(ctx, t);
     if (S.crop.active && S.crop.start && S.crop.end) {
       const x = Math.min(S.crop.start.x, S.crop.end.x);
@@ -677,7 +707,7 @@
     S.crop.ready = false; S.crop.handle = null; S.crop.dragOrigin = null;
     setCropControls(false);
     $('btnCrop').classList.remove('selected-accent');
-    S.seed = null; S.colorPoints = []; S.photoMarks = []; S.result = null; S.waterPixels = 0; S.waterShare = 0;
+    S.seed = null; S.colorPoints = []; S.photoMarks = []; S.photoDrawings = []; S.photoDrawMode = false; S.result = null; S.waterPixels = 0; S.waterShare = 0;
     S.overlayDataURL = null; S.maskTouched = false;
     if (!keepHistory) { S.undo.length = 0; S.redo.length = 0; updateHistoryButtons(); }
     resetView();
@@ -816,6 +846,7 @@
       seed: S.seed, seed_rgb: seedRgbAt(S.seed),
       color_pts: S.colorPoints,
       photo_marks: S.photoMarks.map((m) => ({ x: Math.round(m.x), y: Math.round(m.y), label: m.label, color: m.color || '#5F0001' })),
+      photo_drawings: S.photoDrawings.map((d) => ({ color: d.color, points: d.points.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })) })),
       method: $('method').value, tol: Number($('tolNum').value),
       object: $('object').value, max_divs: Number($('maxDivsNum').value),
       mask_touched: S.maskTouched,
@@ -1446,7 +1477,7 @@
       drawMapMarks(ctx, geo, true);
       drawMapLines(ctx, geo);
       el.mapCredit.textContent = S.map.leafletCredit +
-        ' · ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM), резерв — Terrarium' +
+        ' · ЦМР: USGS EarthExplorer (NASADEM/SRTM), резерв — Copernicus DEM, Terrarium' +
         (S.map.demo ? ' · демо-рельеф (нет сети)' : '');
       el.mapZoom.textContent = `z${S.map.zoom} · ${fmt(S.map.cell, 1)} м/пиксель`;
       if (S.map.minimapVisible) renderMapMinimap();
@@ -1763,7 +1794,8 @@
           zoom: S.map.zoom,
           m_per_px: 156543.03392 * Math.cos(S.map.lat * Math.PI / 180) / Math.pow(2, S.map.zoom)
         },
-        marks: S.map.marks.map((m) => ({ lat: m.lat, lon: m.lon, label: m.label, color: m.color || '#5F0001' }))
+        marks: S.map.marks.map((m) => ({ lat: m.lat, lon: m.lon, label: m.label, color: m.color || '#5F0001' })),
+        drawings: S.map.drawings.map((d) => ({ color: S.map.drawColor, points: d.map((p) => ({ lat: p.lat, lon: p.lon })) }))
       }, 'gidrofraktal-map-report.pdf');
       status('PDF-отчёт по карте сохранён.');
     } catch (e) { status(e.message, true); toast(e.message); }
@@ -1854,13 +1886,24 @@
       renderPhotoMarksList(); renderPhoto();
     });
     $('photoMarksList').addEventListener('input', (e) => {
-      if (!e.target.classList.contains('mark-color')) return;
       const row = e.target.closest('.mark-row');
       if (!row) return;
       const m = S.photoMarks[Number(row.dataset.photoMark)];
-      if (m) { m.color = e.target.value; renderPhoto(); }
+      if (!m) return;
+      if (e.target.classList.contains('mark-color')) { m.color = e.target.value; renderPhoto(); }
+      else if (e.target.classList.contains('mark-name') && e.target.value.trim()) {
+        m.label = e.target.value.trim(); renderPhoto();
+      }
+    });
+    $('photoMarksList').addEventListener('change', (e) => {
+      if (!e.target.classList.contains('mark-name')) return;
+      const row = e.target.closest('.mark-row');
+      if (!row) return;
+      const m = S.photoMarks[Number(row.dataset.photoMark)];
+      if (m && e.target.value.trim()) { m.label = e.target.value.trim(); renderPhotoMarksList(); renderPhoto(); }
     });
     $('photoMarkColor').addEventListener('input', (e) => { S.photoMarkColor = e.target.value; });
+    $('btnPhotoDrawFree').addEventListener('click', togglePhotoDraw);
     $('btnPhotoDraw').addEventListener('click', () => {
       $('tool').value = 'brush'; S.tool = 'brush'; setStatusForTool(); renderPhoto();
       status('Кисть включена: рисуйте выделение воды прямо на снимке.');
@@ -1886,6 +1929,13 @@
       if (S.photoMarkMode && clicked.x >= 0 && clicked.y >= 0 &&
           clicked.x < S.W && clicked.y < S.H) {
         addPhotoMark(clicked);
+        return;
+      }
+      if (S.photoDrawMode && clicked.x >= 0 && clicked.y >= 0 &&
+          clicked.x < S.W && clicked.y < S.H) {
+        S.photoDrawCurrent = [{ x: clicked.x, y: clicked.y }];
+        if (el.photoCanvas.setPointerCapture) el.photoCanvas.setPointerCapture(e.pointerId);
+        renderPhoto();
         return;
       }
       if (S.crop.active) {
@@ -1943,6 +1993,14 @@
       if (S.image) {
         const pt = screenToImage(px, py, rect.width, rect.height);
         el.cursorInfo.textContent = `x: ${Math.round(pt.x)}, y: ${Math.round(pt.y)}`;
+        if (S.photoDrawMode && S.photoDrawCurrent && S.painting !== true) {
+          const last = S.photoDrawCurrent[S.photoDrawCurrent.length - 1];
+          if (!last || Math.hypot(pt.x - last.x, pt.y - last.y) > 1.5) {
+            S.photoDrawCurrent.push({ x: clamp(pt.x, 0, S.W), y: clamp(pt.y, 0, S.H) });
+            renderPhoto();
+          }
+          return;
+        }
       }
       if (S.panning && S.lastPointer) {
         const scale = S.fit * S.zoom;
@@ -1958,6 +2016,15 @@
       }
     });
     const endPhotoPointer = () => {
+      if (S.photoDrawCurrent) {
+        if (S.photoDrawCurrent.length > 1) {
+          S.photoDrawings.push({ color: S.photoMarkColor, points: S.photoDrawCurrent });
+          status(`Заметка нарисована: ${S.photoDrawCurrent.length} точек, привязана к снимку.`);
+        }
+        S.photoDrawCurrent = null;
+        renderPhoto();
+        return;
+      }
       if (S.crop.active && S.crop.start) {
         const r = cropRect();
         if (r && r.w >= 10 && r.h >= 10) {
@@ -2045,11 +2112,24 @@
       else if (act === 'goto') gotoMapMark(i);
     });
     $('marksList').addEventListener('input', (e) => {
-      if (!e.target.classList.contains('mark-color')) return;
       const row = e.target.closest('.mark-row');
       if (!row) return;
       const m = S.map.marks[Number(row.dataset.mark)];
-      if (m) { m.color = e.target.value; rebuildMarkLayer(); renderMap(); }
+      if (!m) return;
+      if (e.target.classList.contains('mark-color')) {
+        m.color = e.target.value; rebuildMarkLayer(); renderMap();
+      } else if (e.target.classList.contains('mark-name') && e.target.value.trim()) {
+        m.label = e.target.value.trim(); rebuildMarkLayer(); renderMap();
+      }
+    });
+    $('marksList').addEventListener('change', (e) => {
+      if (!e.target.classList.contains('mark-name')) return;
+      const row = e.target.closest('.mark-row');
+      if (!row) return;
+      const m = S.map.marks[Number(row.dataset.mark)];
+      if (m && e.target.value.trim()) {
+        m.label = e.target.value.trim(); renderMarksList(); rebuildMarkLayer(); renderMap();
+      }
     });
     $('btnNdwi').addEventListener('click', toggleNdwiLayer);
     $('btnWaterSelect').addEventListener('click', selectWaterObjects);
@@ -2591,7 +2671,7 @@ N(ε) на малых размерах ячеек и завышают D.
 разрешение 300 dpi, источник и дата.
 Если оставить пустым — будет «not set».`,
     mapSource: 'Подложка Sentinel-2 L2A через Planetary Computer STAC + TiTiler; резерв — Esri / Google Satellite. OpenTopoMap отключён.',
-    ndwiThreshold: 'Порог NDWI от −0,25 до 0,40. Вода учитывается при NDWI ≥ порога (по умолчанию −0,25).',
+    ndwiThreshold: 'Порог NDWI от −1 до +1 включительно. Вода учитывается при NDWI ≥ порога (по умолчанию −0,25).',
     mapRelief: 'Показать отмывку по Copernicus DEM GLO-30 (Planetary Computer). Та же ЦМР используется для расчёта водосбора и главного русла.',
     mapMarkText: 'Подпись для следующей метки на карте. Оставьте пустым — будет автоматическая нумерация.',
     mapLat: 'Широта центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.',
@@ -2602,7 +2682,8 @@ N(ε) на малых размерах ячеек и завышают D.
     btnCropCancel: 'Отменить правку обрезки: снимок останется прежним.',
     btnPhotoMark: 'Режим меток на фото: кликните по снимку, чтобы поставить подписанную метку.',
     photoMarkLabel: 'Подпись следующей метки на фото.',
-    photoMarkColor: 'Цвет новых меток на фото; цвет любой метки можно изменить в списке справа.',
+    photoMarkColor: 'Цвет новых меток и рисунков-заметок на фото; цвет метки меняется в списке справа.',
+    btnPhotoDrawFree: 'Рисовать цветные заметки прямо на снимке — линии привязаны к пикселям снимка.',
     btnPhotoDraw: 'Кисть маски: дорисовывает выделение воды на снимке; ластик удаляет лишнее.',
     mapViewMode: 'Что показывать после построения водосбора: подложку вместе с маской, только спутник или только маску водосбора и речной сети.',
     markLat: 'Широта новой метки в градусах (−85…85).',
@@ -2643,6 +2724,23 @@ N(ε) на малых размерах ячеек и завышают D.
       el.ndwiThreshold.addEventListener('input', upd);
       upd();
     }
+    // Лента функций: по clicks открываем нужную группу, повторный click — закрываем.
+    document.querySelectorAll('.ribbon').forEach((ribbon) => {
+      ribbon.querySelectorAll('.ribbon-tab').forEach((tab) => {
+        tab.addEventListener('click', () => {
+          const key = tab.dataset.ribbonTab;
+          const wasActive = tab.classList.contains('active');
+          ribbon.querySelectorAll('.ribbon-tab').forEach((t) => {
+            const on = !wasActive && t === tab;
+            t.classList.toggle('active', on);
+            t.setAttribute('aria-selected', on ? 'true' : 'false');
+          });
+          ribbon.querySelectorAll('.ribbon-panel').forEach((panel) => {
+            panel.classList.toggle('active', !wasActive && panel.dataset.ribbonPanel === key);
+          });
+        });
+      });
+    });
     initTooltips();
     renderMarksList();
     renderPhotoMarksList();

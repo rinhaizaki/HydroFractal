@@ -63,16 +63,16 @@ PC_DEM_TILES = ("https://planetarycomputer.microsoft.com/api/data/v1/collections
                 "cop-dem-glo-30/items/{item}/tiles/WebMercatorQuad/"
                 "{z}/{x}/{y}@1x?assets=data&rescale=-1000,4000&format=png")
 PC_STAC_SEARCH = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
-# NASADEM — запасная ЦМР Planetary Computer, если тайлы Copernicus DEM
-# временно возвращают 500 (такое бывает на стороне Data API).
+# NASADEM (SRTM, архив USGS EarthExplorer) — основной источник ЦМР.
+# Copernicus DEM GLO-30 остаётся резервом.
 NASADEM_TILES = ("https://planetarycomputer.microsoft.com/api/data/v1/collections/"
                  "nasadem/items/{item}/tiles/WebMercatorQuad/"
                  "{z}/{x}/{y}@1x?assets=elevation&rescale=-100,4000&format=png")
 # Последний резерв, если оба PC-сервиса DEM недоступны: terrarium-тайлы
 # с настоящими высотаМИ (не синтетика). PC остаётся основным источником.
 TERRARIUM_URL = "https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png"
-TERRAIN_CREDIT = ("ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM), "
-                  "резерв — Terrarium")
+TERRAIN_CREDIT = ("ЦМР: USGS EarthExplorer (NASADEM/SRTM), резерв — "
+                  "Copernicus DEM GLO-30, Terrarium")
 
 UA = {"User-Agent": "Gidrofraktal/1.0 (river fractal analysis)"}
 
@@ -194,18 +194,25 @@ def _decode_dem_png(data, lo, hi=4000.0):
 
 
 def fetch_terrain_tile(z, x, y, use_cache=True):
-    """Тайл ЦМР Planetary Computer → высоты в метрах (256×256) или None."""
+    """Тайл ЦМР USGS EarthExplorer / NASADEM → высоты в метрах (256×256) или None."""
     cpath = _cache_path("dem-pc", z, x, y) if use_cache else None
-    data, lo, terrarium = None, DEM_RESCALE[0], False
+    meta_path = cpath + ".json" if cpath else None
+    data, lo, terrarium = None, -100.0, False
     if cpath and os.path.exists(cpath):
         try:
             with open(cpath, "rb") as f:
                 data = f.read()
+            if meta_path and os.path.exists(meta_path):
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                lo = float(meta.get("lo", lo))
+                terrarium = bool(meta.get("terrarium", False))
         except Exception:
             data = None
     if data is None:
-        for url, low, terr in ((_pc_dem_url(z, x, y), DEM_RESCALE[0], False),
-                               (_nasa_dem_url(z, x, y), -100.0, False),
+        lo, terrarium = -100.0, False
+        for url, low, terr in ((_nasa_dem_url(z, x, y), -100.0, False),
+                               (_pc_dem_url(z, x, y), DEM_RESCALE[0], False),
                                (TERRARIUM_URL.format(z=z, x=x, y=y), 0.0, True)):
             try:
                 data = _http_get(url)
@@ -221,6 +228,9 @@ def fetch_terrain_tile(z, x, y, use_cache=True):
                     os.makedirs(os.path.dirname(cpath), exist_ok=True)
                     with open(cpath, "wb") as f:
                         f.write(data)
+                    if meta_path:
+                        with open(meta_path, "w", encoding="utf-8") as f:
+                            json.dump({"lo": lo, "terrarium": terrarium}, f)
             except Exception:
                 pass
     try:
