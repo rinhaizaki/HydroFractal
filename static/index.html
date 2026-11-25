@@ -109,6 +109,7 @@
       <label class="field-label" for="brush">Размер ластика/кисти:</label>
       <input type="range" id="brush" min="2" max="80" value="18" class="range">
       <input type="number" id="brushNum" min="2" max="120" value="18" class="num">
+      <button class="btn small" id="btnPhotoDraw" title="Кисть: рисуйте выделение воды прямо на снимке">✏ Рисовать</button>
       <span class="sep"></span>
       <button class="btn" id="btnUndo" title="Ctrl+Z" disabled>↶ Назад</button>
       <button class="btn" id="btnRedo" title="Ctrl+Y" disabled>↷ Вперёд</button>
@@ -128,6 +129,8 @@
       <button class="btn small" data-rotate="fliph">⇋ отразить</button>
       <button class="btn small" data-rotate="flipv">⇵ отразить</button>
       <button class="btn small" id="btnCrop">✂ Обрезать снимок</button>
+      <button class="btn small accent" id="btnCropApply" hidden>✓ Применить обрезку</button>
+      <button class="btn small" id="btnCropCancel" hidden>✕ Отменить правку</button>
       <span class="sep"></span>
       <label class="field-label" for="maxDivs">Число делений сетки:</label>
       <input type="range" id="maxDivs" min="10" max="120" value="60" class="range short">
@@ -221,6 +224,10 @@
             <summary>Характеристики стока по D</summary>
             <div class="table-scroll" id="streamWrap"></div>
           </details>
+          <details id="sp33Details">
+            <summary>СП 33-101-2003 — таблица k<sub>p</sub></summary>
+            <div class="table-scroll" id="sp33Wrap"></div>
+          </details>
         </aside>
       </div>
     </section>
@@ -234,6 +241,12 @@
           <option value="esri">Esri (резервный спутник)</option>
         </select>
         <label class="check"><input type="checkbox" id="mapRelief"> ЦМР / рельеф</label>
+        <label class="field-label" for="mapViewMode">Вид:</label>
+        <select id="mapViewMode" class="select">
+          <option value="overlay">Снимок + водосбор</option>
+          <option value="image">Только снимок</option>
+          <option value="mask">Только маска</option>
+        </select>
         <button class="btn small" id="btnNdwi" title="Показать или скрыть слой NDWI по Sentinel-2">💧 NDWI</button>
         <button class="btn small" id="btnWaterSelect" title="Выделить водные объекты по порогу NDWI">🎯 Вода</button>
         <input type="range" id="ndwiThreshold" class="range short" min="-25" max="40" value="-25" step="1" title="Порог NDWI: −0,25 … 0,40">
@@ -244,8 +257,13 @@
         <input type="number" id="mapLon" class="num coord-num" value="30.33510" step="0.00001" min="-180" max="180" title="Долгота центра карты, градусы">
         <button class="btn small" id="btnMapSearch" title="Найти место по координатам (центр карты, без постановки створа)">🔎 Найти</button>
         <input type="text" id="mapMarkText" class="mark-label" placeholder="Подпись метки" size="14" title="Подпись для новой метки на карте">
+        <input type="number" id="markLat" class="num coord-num" placeholder="Широта метки" step="0.00001" title="Широта новой метки, градусы">
+        <input type="number" id="markLon" class="num coord-num" placeholder="Долгота метки" step="0.00001" title="Долгота новой метки, градусы">
+        <button class="btn small" id="btnMapMarkCoord" title="Поставить метку по введённым координатам">📍 По координатам</button>
         <button class="btn small" id="btnMapMark" title="Режим меток: кликайте по карте, чтобы оставить отметки">📌 Метка</button>
         <button class="btn small" id="btnMapClearMarks" title="Удалить все метки с карты">🗑 Метки</button>
+        <button class="btn small" id="btnMapDraw" title="Свободное рисование поверх карты (полилиния)">✏ Рисовать</button>
+        <button class="btn small" id="btnMapDrawClear" title="Удалить все рисунки с карты">🗑 Рисунки</button>
         <button class="btn small" id="btnMapHome" title="Вернуться к центру — Санкт-Петербург">⌂</button>
         <button class="btn small" id="btnMapZoomOut" title="Уменьшить масштаб карты">🔍−</button>
         <button class="btn small" id="btnMapZoomIn" title="Увеличить масштаб карты">🔍+</button>
@@ -271,8 +289,12 @@
             </div>
           </div>
           <div class="canvas-foot map-foot">
-            <span id="mapCredit">Карта: Esri · ЦМР: Copernicus DEM GLO-30 / Planetary Computer</span>
+            <span id="mapCredit">Карта: Esri · ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM)</span>
             <span id="mapZoom">z11 · 114 м/пиксель</span>
+          </div>
+          <div class="marks-panel" id="marksPanel">
+            <div class="marks-head">Метки и рисунки <span class="note">— переименуйте, удалите или перейдите к координатам</span></div>
+            <div id="marksList"></div>
           </div>
         </div>
         <aside class="results map-results">
@@ -283,9 +305,12 @@
 2. Кликните по руслу реки — появится красный маркер створа.
 3. «Построить водосбор» — синим показана предварительная область,
    оливковым — уточнённый водосбор, коричневым — речная сеть,
-   бордовым — главное русло (D8-гидрология по ЦМР Copernicus DEM GLO-30).
-4. «Рассчитать D» — канторовский метод по главному руслу.
-5. «Отчёт PDF» — сводный отчёт с картой и морфометрией.</pre>
+   бордовым — главное русло (D8-гидрология по ЦМР Planetary Computer).
+4. Поле «Вид» показывает снимок с водосбором, только снимок или только маску.
+5. Метки ставятся кликом или по координатам; список ниже позволяет их
+   переименовывать и удалять. Кнопка «Рисовать» добавляет линии поверх карты.
+6. «Рассчитать D» — канторовский метод по главному руслу.
+7. «Отчёт PDF» — сводный отчёт с картой, морфометрией и таблицей СП 33-101-2003.</pre>
           <div class="plot-box">
             <div class="box-title">График log N(ε) — главное русло</div>
             <img id="mapPlotImg" alt="График для главного русла" hidden>
@@ -294,6 +319,10 @@
           <details id="mapTableDetails">
             <summary>Таблица измерений n / ε / N(ε)</summary>
             <div class="table-scroll" id="mapTableWrap"></div>
+          </details>
+          <details id="mapSp33Details">
+            <summary>СП 33-101-2003 — таблица k<sub>p</sub></summary>
+            <div class="table-scroll" id="mapSp33Wrap"></div>
           </details>
         </aside>
       </div>

@@ -63,7 +63,12 @@ PC_DEM_TILES = ("https://planetarycomputer.microsoft.com/api/data/v1/collections
                 "cop-dem-glo-30/items/{item}/tiles/WebMercatorQuad/"
                 "{z}/{x}/{y}@1x?assets=data&rescale=-1000,4000&format=png")
 PC_STAC_SEARCH = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
-TERRAIN_CREDIT = "ЦМР: Copernicus DEM GLO-30 / Planetary Computer"
+# NASADEM — запасная ЦМР Planetary Computer, если тайлы Copernicus DEM
+# временно возвращают 500 (такое бывает на стороне Data API).
+NASADEM_TILES = ("https://planetarycomputer.microsoft.com/api/data/v1/collections/"
+                 "nasadem/items/{item}/tiles/WebMercatorQuad/"
+                 "{z}/{x}/{y}@1x?assets=elevation&rescale=-100,4000&format=png")
+TERRAIN_CREDIT = "ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM)"
 
 UA = {"User-Agent": "Gidrofraktal/1.0 (river fractal analysis)"}
 
@@ -161,10 +166,33 @@ def _pc_dem_url(z, x, y):
     return PC_DEM_TILES.format(item=item, z=z, x=x, y=y)
 
 
+def _nasa_dem_item_name(lon, lat):
+    """Имя 1° тайла NASADEM (широта/долгота округляются до центра тайла)."""
+    ilon, ilat = int(round(lon)), int(round(lat))
+    return ("NASADEM_HGT_{latdir}{lat:02d}{londir}{lon:03d}"
+            .format(lat=abs(ilat), latdir="n" if ilat >= 0 else "s",
+                    lon=abs(ilon), londir="e" if ilon >= 0 else "w"))
+
+
+def _nasa_dem_url(z, x, y):
+    lon, lat = tile_to_lonlat(x + 0.5, y + 0.5, z)
+    return NASADEM_TILES.format(item=_nasa_dem_item_name(lon, lat),
+                                z=z, x=x, y=y)
+
+
+def _decode_dem_png(data, lo, hi=4000.0):
+    """TiTiler: одноканальная ЦМР кодируется в R по линейной шкале."""
+    im = Image.open(io.BytesIO(data)).convert("RGBA")
+    a = np.asarray(im).astype(np.float32)
+    heights = a[..., 0] / 255.0 * (hi - lo) + lo
+    heights[a[..., 3] < 128] = np.nan  # вне покрытия тайла
+    return heights
+
+
 def fetch_terrain_tile(z, x, y, use_cache=True):
-    """Тайл Copernicus DEM GLO-30 → высоты в метрах (256×256) или None."""
+    """Тайл ЦМР Planetary Computer → высоты в метрах (256×256) или None."""
     cpath = _cache_path("dem-pc", z, x, y) if use_cache else None
-    data = None
+    data, lo = None, DEM_RESCALE[0]
     if cpath and os.path.exists(cpath):
         try:
             with open(cpath, "rb") as f:
@@ -172,9 +200,15 @@ def fetch_terrain_tile(z, x, y, use_cache=True):
         except Exception:
             data = None
     if data is None:
-        try:
-            data = _http_get(_pc_dem_url(z, x, y))
-        except Exception:
+        for url, low in ((_pc_dem_url(z, x, y), DEM_RESCALE[0]),
+                         (_nasa_dem_url(z, x, y), -100.0)):
+            try:
+                data = _http_get(url)
+                lo = low
+                break
+            except Exception:
+                continue
+        if data is None:
             return None
         if cpath:
             try:
@@ -185,13 +219,7 @@ def fetch_terrain_tile(z, x, y, use_cache=True):
             except Exception:
                 pass
     try:
-        im = Image.open(io.BytesIO(data)).convert("RGBA")
-        a = np.asarray(im).astype(np.float32)
-        # TiTiler кодирует одноканальный DEM в RGB: R=G=B = LIN(h, -1000, 4000).
-        lo, hi = DEM_RESCALE
-        heights = a[..., 0] / 255.0 * (hi - lo) + lo
-        heights[a[..., 3] < 128] = np.nan  # вне 1° тайла Copernicus DEM
-        return heights
+        return _decode_dem_png(data, lo)
     except Exception:
         return None
 

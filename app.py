@@ -180,6 +180,8 @@ def _stream_payload(D: float, dD: float = 0.0) -> dict:
     out = {k: _clean_number(s[k], 5) for k in keep}
     out["qp"] = [{"p": p, "k": _clean_number(s["kp_by_p"][p], 4),
                   "q": _clean_number(s["qp_by_p"][p], 2)} for p in hydro_core.MAJOR_P]
+    out["sp33"] = [[_clean_number(v, 5) for v in row]
+                   for row in hydro_core.sp33_kp_table(s["Cv"])]
     return out
 
 

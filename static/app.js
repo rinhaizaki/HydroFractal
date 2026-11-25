@@ -24,7 +24,7 @@
     mapTableWrap: $('mapTableWrap'), mapTableDetails: $('mapTableDetails'),
     mapCredit: $('mapCredit'), mapZoom: $('mapZoom'), mapCoords: $('mapCoords'),
     mapLat: $('mapLat'), mapLon: $('mapLon'), mapMarkText: $('mapMarkText'),
-    ndwiThreshold: $('ndwiThreshold'),
+    ndwiThreshold: $('ndwiThreshold'), mapViewMode: $('mapViewMode'),
     leafletWrap: $('leafletMap'),
     mapMinimapBox: $('mapMinimapBox'), mapMinimapCanvas: $('mapMinimapCanvas'),
     status: $('status'), statusRight: $('statusRight'),
@@ -46,7 +46,7 @@
     undo: [], redo: [], painting: false, panning: false, lastPaint: null, lastPointer: null,
     result: null, waterPixels: 0, waterShare: 0, minimapVisible: false, maskNonEmpty: false,
     overlayDataURL: null, maskTouched: false, cropped: false,
-    crop: { active: false, start: null, end: null },
+    crop: { active: false, start: null, end: null, ready: false, handle: null, dragOrigin: null },
     mapTabLoaded: false, activeTab: 'photo',
     map: {
       lon: 30.33510, lat: 59.93428, zoom: 11, source: 'sentinel', relief: false,
@@ -54,12 +54,13 @@
       ndwiLayer: null, ndwiOn: false,
       waterLayer: null, waterImageLayer: null, markLayer: null, waterObjects: [],
       img: null, geo: null, outlet: null, result: null, info: null,
-      credit: 'Sentinel-2 L2A: Copernicus / Planetary Computer · ЦМР: Copernicus DEM GLO-30 / Planetary Computer', demo: false, cell: 0,
+      credit: 'Sentinel-2 L2A: Copernicus / Planetary Computer · ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM)', demo: false, cell: 0,
       panDx: 0, panDy: 0, dragStart: null, moved: false, loading: false,
       tiles: [], reliefImg: null, overlayImg: null, reportImage: null, mask: null, width: 0, height: 0,
       minimapVisible: false, miniKey: '', miniResp: null,
       leaflet: null, tileLayer: null, layerIndex: 0, tileErrors: 0,
-      marks: [], markMode: false,
+      marks: [], markMode: false, viewMode: 'overlay',
+      drawings: [], drawMode: false, drawCurrent: null, drawLayer: null,
       leafletCredit: 'Sentinel-2 L2A: Copernicus / Planetary Computer',
       overlayGeo: null, reliefGeo: null, moveTimer: null
     }
@@ -394,10 +395,23 @@
       const cw = Math.abs(S.crop.end.x - S.crop.start.x);
       const ch = Math.abs(S.crop.end.y - S.crop.start.y);
       ctx.save();
+      const rx = t.dx + x * t.scale, ry = t.dy + y * t.scale;
+      const rw = cw * t.scale, rh = ch * t.scale;
       ctx.fillStyle = 'rgba(95,0,1,.08)';
-      ctx.strokeStyle = '#5F0001'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
-      ctx.fillRect(t.dx + x * t.scale, t.dy + y * t.scale, cw * t.scale, ch * t.scale);
-      ctx.strokeRect(t.dx + x * t.scale, t.dy + y * t.scale, cw * t.scale, ch * t.scale);
+      ctx.strokeStyle = '#5F0001'; ctx.lineWidth = 2;
+      ctx.setLineDash(S.crop.ready ? [] : [6, 4]);
+      ctx.fillRect(rx, ry, rw, rh);
+      ctx.strokeRect(rx, ry, rw, rh);
+      if (S.crop.ready) {
+        ctx.setLineDash([]);
+        [[rx, ry], [rx + rw, ry], [rx, ry + rh], [rx + rw, ry + rh],
+         [rx + rw / 2, ry], [rx + rw / 2, ry + rh],
+         [rx, ry + rh / 2], [rx + rw, ry + rh / 2]].forEach(([hx, hy]) => {
+          ctx.fillStyle = '#fff'; ctx.fillRect(hx - 5, hy - 5, 10, 10);
+          ctx.strokeStyle = '#5F0001'; ctx.lineWidth = 1.5;
+          ctx.strokeRect(hx - 5, hy - 5, 10, 10);
+        });
+      }
       ctx.restore();
     }
     if (S.minimapVisible) renderMinimap();
@@ -466,13 +480,66 @@
   }
 
   // ------------------------------------------------------------------- обрезка
+  function setCropControls(ready) {
+    $('btnCropApply').hidden = !ready;
+    $('btnCropCancel').hidden = !ready;
+  }
+  function cropRect() {
+    const a = S.crop.start, b = S.crop.end;
+    if (!a || !b) return null;
+    return {
+      x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
+      w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y)
+    };
+  }
+  function cropHit(pt) {
+    const r = cropRect();
+    if (!r || r.w < 2 || r.h < 2) return null;
+    const tol = 12 / Math.max(0.2, S.fit * S.zoom);
+    const x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h;
+    const near = (v, target) => Math.abs(v - target) <= tol;
+    const insideX = pt.x >= x0 - tol && pt.x <= x1 + tol;
+    const insideY = pt.y >= y0 - tol && pt.y <= y1 + tol;
+    if (!insideX || !insideY) return null;
+    if (near(pt.x, x0) && near(pt.y, y0)) return 'nw';
+    if (near(pt.x, x1) && near(pt.y, y0)) return 'ne';
+    if (near(pt.x, x0) && near(pt.y, y1)) return 'sw';
+    if (near(pt.x, x1) && near(pt.y, y1)) return 'se';
+    if (near(pt.x, x0) && pt.y > y0 && pt.y < y1) return 'w';
+    if (near(pt.x, x1) && pt.y > y0 && pt.y < y1) return 'e';
+    if (near(pt.y, y0) && pt.x > x0 && pt.x < x1) return 'n';
+    if (near(pt.y, y1) && pt.x > x0 && pt.x < x1) return 's';
+    if (pt.x > x0 && pt.x < x1 && pt.y > y0 && pt.y < y1) return 'move';
+    return null;
+  }
+  function updateCropByHandle(pt) {
+    const o = S.crop.dragOrigin, h = S.crop.handle;
+    if (!o || !h) return;
+    const dx = pt.x - o.pt.x, dy = pt.y - o.pt.y;
+    const s = { ...o.start }, e = { ...o.end };
+    if (h === 'move') { s.x += dx; e.x += dx; s.y += dy; e.y += dy; }
+    if (h === 'nw' || h === 'w') s.x = clamp(s.x + dx, 0, S.W - 10);
+    if (h === 'ne' || h === 'e') e.x = clamp(e.x + dx, 0, S.W - 10);
+    if (h === 'nw' || h === 'n') s.y = clamp(s.y + dy, 0, S.H - 10);
+    if (h === 'sw' || h === 's') e.y = clamp(e.y + dy, 0, S.H - 10);
+    if (h === 'move') {
+      const w = o.end.x - o.start.x, hgt = o.end.y - o.start.y;
+      s.x = clamp(o.start.x + dx, 0, S.W - Math.abs(w));
+      e.x = s.x + w;
+      s.y = clamp(o.start.y + dy, 0, S.H - Math.abs(hgt));
+      e.y = s.y + hgt;
+    }
+    S.crop.start = s; S.crop.end = e;
+  }
   function toggleCrop() {
     if (!S.image) { toast('Сначала загрузите снимок.'); return; }
     S.crop.active = !S.crop.active;
     S.crop.start = S.crop.end = null;
+    S.crop.ready = false; S.crop.handle = null; S.crop.dragOrigin = null;
+    setCropControls(false);
     $('btnCrop').classList.toggle('selected-accent', S.crop.active);
     status(S.crop.active
-      ? 'Обрезка: выделите прямоугольник на снимке ЛКМ. Повторное нажатие — отмена.'
+      ? 'Обрезка: выделите область ЛКМ, затем тяните рамку или её стороны. Нажмите «Применить обрезку», когда результат устроит.'
       : 'Обрезка отменена.');
     renderPhoto();
   }
@@ -495,6 +562,8 @@
   async function finishCrop() {
     const a = S.crop.start, b = S.crop.end;
     S.crop.active = false; S.crop.start = S.crop.end = null;
+    S.crop.ready = false; S.crop.handle = null; S.crop.dragOrigin = null;
+    setCropControls(false);
     $('btnCrop').classList.remove('selected-accent');
     if (!a || !b) { renderPhoto(); return; }
     const x = clamp(Math.round(Math.min(a.x, b.x)), 0, S.W - 1);
@@ -603,6 +672,8 @@
     S.sourceName = name || 'screenshot.png';
     initMask(S.W, S.H);
     S.crop.active = false; S.crop.start = S.crop.end = null;
+    S.crop.ready = false; S.crop.handle = null; S.crop.dragOrigin = null;
+    setCropControls(false);
     $('btnCrop').classList.remove('selected-accent');
     S.seed = null; S.colorPoints = []; S.result = null; S.waterPixels = 0; S.waterShare = 0;
     S.overlayDataURL = null; S.maskTouched = false;
@@ -710,6 +781,15 @@
     buildTable(result.table || [], el.tableWrap, ['n', 'ε, px', 'N(ε)']);
     buildTable((stream.qp || []).map((p) => [fmt(p.p, 1) + ' %', fmt(p.k, 4), fmt(p.q, 2)]),
       el.streamWrap, ['Обеспеченность P', 'Kp', 'Qp, м³/с']);
+    renderSp33(stream, 'sp33Wrap');
+  }
+  function renderSp33(stream, wrapId) {
+    const wrap = $(wrapId);
+    if (!wrap) return;
+    const rows = (stream && stream.sp33) || [];
+    if (!rows.length) { wrap.innerHTML = '<p class="note">Таблица появится после расчёта.</p>'; return; }
+    const head = ['P, %', 'Cs/Cv = 0', '0,5', '1', '1,5', '2', '3'];
+    buildTable(rows.map((r) => [fmt(r[0], 1), ...r.slice(1).map((v) => fmt(v, 2))]), wrap, head);
   }
   function setBadge(id, text, kind) {
     const b = $(id);
@@ -900,7 +980,7 @@
     });
     S.map.tileLayer.addTo(S.map.leaflet);
     S.map.leafletCredit = src.credit;
-    renderMap();
+    applyMapViewMode();
   }
   // ------------------------------------------------ Sentinel-2 / NDWI (ГИС-слой)
   function loadCorsImage(url, timeoutMs) {
@@ -1073,7 +1153,10 @@
     S.map.leaflet = map;
     el.mapWrap.classList.add('leaflet-mode');
     el.mapPlaceholder.hidden = true;
-    if (window.L && L.layerGroup) S.map.markLayer = L.layerGroup().addTo(map);
+    if (window.L && L.layerGroup) {
+      S.map.markLayer = L.layerGroup().addTo(map);
+      S.map.drawLayer = L.layerGroup().addTo(map);
+    }
     setLeafletLayer(0);
     if (S.map.source === 'sentinel') ensureSentinelItem();
     const sync = () => {
@@ -1086,7 +1169,25 @@
       if (S.map.minimapVisible) loadMapMinimap();
     };
     map.on('moveend zoomend', sync);
+    if (window.L && map.on) {
+      map.on('mousedown', (e) => {
+        if (!S.map.drawMode || e.originalEvent && e.originalEvent.button !== 0) return;
+        S.map.drawCurrent = [{ lat: e.latlng.lat, lon: e.latlng.lng }];
+      });
+      map.on('mousemove', (e) => {
+        if (!S.map.drawMode || !S.map.drawCurrent) return;
+        S.map.drawCurrent.push({ lat: e.latlng.lat, lon: e.latlng.lng });
+        renderMap();
+      });
+      map.on('mouseup', () => {
+        if (!S.map.drawCurrent) return;
+        if (S.map.drawCurrent.length > 1) S.map.drawings.push(S.map.drawCurrent);
+        S.map.drawCurrent = null;
+        rebuildDrawLayer();
+      });
+    }
     map.on('click', (e) => {
+      if (S.map.drawMode) return;
       if (S.map.markMode) {
         addMapMark(e.latlng.lat, e.latlng.lng);
         return;
@@ -1109,6 +1210,22 @@
       loadMapView(true);
     }
   }
+  function applyMapViewMode() {
+    const mode = S.map.viewMode || 'overlay';
+    const baseOn = mode !== 'mask';
+    const maskOn = mode !== 'image';
+    if (S.map.tileLayer && S.map.tileLayer.setOpacity) S.map.tileLayer.setOpacity(baseOn ? 1 : 0);
+    [S.map.ndwiLayer, S.map.waterImageLayer].forEach((layer) => {
+      if (layer && layer.setOpacity) layer.setOpacity(baseOn ? 1 : 0);
+    });
+    if (S.map.waterLayer && S.map.waterLayer.eachLayer) {
+      S.map.waterLayer.eachLayer((layer) => {
+        if (layer.setOpacity) layer.setOpacity(baseOn ? 1 : 0);
+      });
+    }
+    el.mapWrap.classList.toggle('mask-mode', !baseOn);
+    renderMap();
+  }
   function projectOverlay(ctx, img, srcGeo, dstGeo, w, h, alpha) {
     if (!img || !srcGeo || !dstGeo) return;
     const k = Math.pow(2, dstGeo.z - srcGeo.z);
@@ -1127,25 +1244,86 @@
     const py = (sy - S.map.panDy) * geo.h / rect.height;
     return lonLatFromTile(geo.x0 + px / 256, geo.y0 + py / 256, geo.z);
   }
-  function addMapMark(lat, lon) {
-    const raw = (el.mapMarkText && el.mapMarkText.value || '').trim();
-    const n = S.map.marks.length;
-    const label = raw || `Метка ${n + 1}`;
-    S.map.marks.push({ lat, lon, label });
-    if (el.mapMarkText) el.mapMarkText.value = '';
-    if (S.map.leaflet && window.L && S.map.markLayer) {
-      const marker = L.circleMarker([lat, lon], {
+  function rebuildMarkLayer() {
+    if (!S.map.leaflet || !window.L || !S.map.markLayer) return;
+    S.map.markLayer.clearLayers();
+    S.map.marks.forEach((m, i) => {
+      const marker = L.circleMarker([m.lat, m.lon], {
         radius: 10, color: '#ffffff', weight: 2,
         fillColor: '#5F0001', fillOpacity: 1
       });
-      marker.bindTooltip(`${n + 2}. ${label}`, {
+      marker.bindTooltip(`${i + 2}. ${m.label}`, {
         permanent: true, direction: 'right', offset: [12, 0], className: 'hf-mark-tip'
       });
-      marker.bindPopup(`<b>${n + 2}. ${escHtml(label)}</b><br>${fmt(lat, 5)}° N, ${fmt(lon, 5)}° E`);
+      marker.bindPopup(`<b>${i + 2}. ${escHtml(m.label)}</b><br>` +
+        `${fmt(m.lat, 5)}° N, ${fmt(m.lon, 5)}° E`);
       marker.addTo(S.map.markLayer);
+    });
+  }
+  function renderMarksList() {
+    const box = $('marksList');
+    if (!box) return;
+    if (!S.map.marks.length) {
+      box.innerHTML = '<div class="note">Меток пока нет. Поставьте метку кликом по карте ' +
+        'или введите координаты выше.</div>';
+      return;
     }
+    box.innerHTML = S.map.marks.map((m, i) => `
+      <div class="mark-row" data-mark="${i}">
+        <span class="mark-num">${i + 2}.</span>
+        <input type="text" class="mark-name" value="${escHtml(m.label)}" aria-label="Название метки ${i + 2}">
+        <span class="mark-coord">${fmt(m.lat, 5)}° N, ${fmt(m.lon, 5)}° E</span>
+        <button class="btn small" data-mark-act="rename">Сохранить</button>
+        <button class="btn small" data-mark-act="goto">К карте</button>
+        <button class="btn small" data-mark-act="delete">Удалить</button>
+      </div>`).join('');
+  }
+  function addMapMark(lat, lon, labelOverride) {
+    const raw = labelOverride !== undefined ? labelOverride
+      : ((el.mapMarkText && el.mapMarkText.value || '').trim());
+    const n = S.map.marks.length;
+    const label = raw || `Метка ${n + 1}`;
+    S.map.marks.push({ lat, lon, label });
+    if (el.mapMarkText && labelOverride === undefined) el.mapMarkText.value = '';
+    rebuildMarkLayer();
+    renderMarksList();
     renderMap();
     status(`Метка «${label}» поставлена: ${fmt(lat, 5)}° N, ${fmt(lon, 5)}° E.`);
+  }
+  function addMapMarkByCoords() {
+    const lat = Number($('markLat').value), lon = Number($('markLon').value);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) ||
+        Math.abs(lat) > 85 || Math.abs(lon) > 180) {
+      toast('Введите корректные широту (−85…85) и долготу (−180…180).');
+      return;
+    }
+    const label = (el.mapMarkText && el.mapMarkText.value || '').trim() || undefined;
+    addMapMark(lat, lon, label);
+    centerMapAt(lat, lon);
+    status(`Метка по координатам: ${fmt(lat, 5)}° N, ${fmt(lon, 5)}° E. Карта центрирована.`);
+  }
+  function gotoMapMark(i) {
+    const m = S.map.marks[i];
+    if (!m) return;
+    centerMapAt(m.lat, m.lon);
+    status(`Карта центрирована на метке «${m.label}».`);
+  }
+  function deleteMapMark(i) {
+    if (!S.map.marks[i]) return;
+    const name = S.map.marks[i].label;
+    S.map.marks.splice(i, 1);
+    rebuildMarkLayer(); renderMarksList(); renderMap();
+    status(`Метка «${name}» удалена.`);
+  }
+  function renameMapMark(i) {
+    const m = S.map.marks[i];
+    if (!m) return;
+    const input = document.querySelector(`.mark-row[data-mark="${i}"] .mark-name`);
+    const value = input ? input.value.trim() : '';
+    if (!value) { toast('Введите название метки.'); return; }
+    m.label = value;
+    rebuildMarkLayer(); renderMarksList(); renderMap();
+    status(`Метка переименована: «${value}».`);
   }
   function toggleMapMark() {
     S.map.markMode = !S.map.markMode;
@@ -1157,9 +1335,8 @@
   function clearMapMarks() {
     const n = S.map.marks.length;
     S.map.marks.length = 0;
-    if (S.map.markLayer && S.map.leaflet) {
-      S.map.markLayer.clearLayers();
-    }
+    if (S.map.markLayer && S.map.leaflet) S.map.markLayer.clearLayers();
+    renderMarksList();
     renderMap();
     status(n ? 'Все метки удалены.' : 'Меток пока нет.');
   }
@@ -1189,6 +1366,48 @@
       ctx.restore();
     });
   }
+  function rebuildDrawLayer() {
+    if (S.map.drawLayer && S.map.leaflet) {
+      S.map.drawLayer.clearLayers();
+      S.map.drawings.forEach((line) => {
+        L.polyline(line.map((p) => [p.lat, p.lon]), {
+          color: '#5F0001', weight: 3, opacity: 0.9
+        }).addTo(S.map.drawLayer);
+      });
+    }
+    renderMap();
+  }
+  function toggleMapDraw() {
+    S.map.drawMode = !S.map.drawMode;
+    $('btnMapDraw').classList.toggle('selected-accent', S.map.drawMode);
+    status(S.map.drawMode
+      ? 'Режим рисования включён: ведите линию по карте ЛКМ. Повторное нажатие — выход.'
+      : 'Режим рисования выключен.');
+  }
+  function clearMapDrawings() {
+    const n = S.map.drawings.length;
+    S.map.drawings.length = 0;
+    S.map.drawCurrent = null;
+    rebuildDrawLayer();
+    status(n ? `Удалено рисунков: ${n}.` : 'Рисунков пока нет.');
+  }
+  function drawMapLines(ctx, geo) {
+    if (!geo || !S.map.drawings.length) return;
+    const rect = el.mapCanvas.getBoundingClientRect();
+    ctx.save();
+    ctx.strokeStyle = '#5F0001'; ctx.lineWidth = 3;
+    S.map.drawings.forEach((line) => {
+      ctx.beginPath();
+      line.forEach((p, i) => {
+        const t = tileXY(p.lon, p.lat, geo.z);
+        const px = ((t.x - geo.x0) * 256) * rect.width / geo.w + S.map.panDx;
+        const py = ((t.y - geo.y0) * 256) * rect.height / geo.h + S.map.panDy;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
   function drawOutletMarker(ctx, px, py, label) {
     ctx.save();
     ctx.strokeStyle = '#ff3c3c'; ctx.fillStyle = '#ff3c3c'; ctx.lineWidth = 3;
@@ -1209,37 +1428,42 @@
     if (S.map.leaflet) {
       // Leaflet рисует подложку; на прозрачном холсте — только расчётные слои.
       const geo = viewGeoPixels(S.map.lon, S.map.lat, S.map.zoom, w, h);
-      projectOverlay(ctx, S.map.reliefImg, S.map.reliefGeo, geo, w, h, 0.55);
-      projectOverlay(ctx, S.map.overlayImg, S.map.overlayGeo, geo, w, h, 1);
+      const showBase = S.map.viewMode !== 'mask';
+      const showMask = S.map.viewMode !== 'image';
+      if (showBase) projectOverlay(ctx, S.map.reliefImg, S.map.reliefGeo, geo, w, h, 0.55);
+      if (showMask) projectOverlay(ctx, S.map.overlayImg, S.map.overlayGeo, geo, w, h, 1);
       if (S.map.outlet) {
         const p = S.map.leaflet.latLngToContainerPoint(
           [S.map.outlet.lat, S.map.outlet.lon]);
         drawOutletMarker(ctx, p.x, p.y, true);
       }
       drawMapMarks(ctx, geo, true);
+      drawMapLines(ctx, geo);
       el.mapCredit.textContent = S.map.leafletCredit +
-        ' · ЦМР: Copernicus DEM GLO-30 / Planetary Computer' +
+        ' · ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM)' +
         (S.map.demo ? ' · демо-рельеф (нет сети)' : '');
       el.mapZoom.textContent = `z${S.map.zoom} · ${fmt(S.map.cell, 1)} м/пиксель`;
       if (S.map.minimapVisible) renderMapMinimap();
       return;
     }
     if (!S.map.img) return;
-    ctx.drawImage(S.map.img, S.map.panDx, S.map.panDy, w, h);
+    const showBase = S.map.viewMode !== 'mask';
+    const showMask = S.map.viewMode !== 'image';
+    if (showBase) ctx.drawImage(S.map.img, S.map.panDx, S.map.panDy, w, h);
     const geo = S.map.geo;
     if (geo) {
       const sx = w / geo.w, sy = h / geo.h;
       // настоящие спутниковые/топо-тайлы: <img> загружаются без CORS
-      (S.map.tiles || []).forEach((t) => {
+      if (showBase) (S.map.tiles || []).forEach((t) => {
         ctx.drawImage(t.img, S.map.panDx + t.px * sx, S.map.panDy + t.py * sy,
           256 * sx, 256 * sy);
       });
-      if (S.map.reliefImg) {
+      if (showBase && S.map.reliefImg) {
         ctx.globalAlpha = 0.55;
         ctx.drawImage(S.map.reliefImg, S.map.panDx, S.map.panDy, w, h);
         ctx.globalAlpha = 1;
       }
-      if (S.map.overlayImg) {
+      if (showMask && S.map.overlayImg) {
         ctx.drawImage(S.map.overlayImg, S.map.panDx, S.map.panDy, w, h);
       }
     }
@@ -1250,6 +1474,7 @@
       drawOutletMarker(ctx, px, py, true);
     }
     drawMapMarks(ctx, geo, false);
+    drawMapLines(ctx, geo);
     el.mapCredit.textContent = S.map.credit + (S.map.demo ? ' · демо-рельеф (нет сети)' : '');
     el.mapZoom.textContent = `z${S.map.zoom} · ${fmt(S.map.cell, 1)} м/пиксель`;
     if (S.map.minimapVisible) renderMapMinimap();
@@ -1419,6 +1644,7 @@
     el.mapReport.textContent = lines.join('\n');
     if (r.plot) { el.mapPlot.src = r.plot; el.mapPlot.hidden = false; el.mapPlotEmpty.hidden = true; }
     buildTable(r.table || [], el.mapTableWrap, ['n', 'ε, px', 'N(ε)']);
+    renderSp33(st, 'mapSp33Wrap');
     setBadge('mapBadge', 'готово', 'ok');
   }
   async function mapAnalyze() {
@@ -1559,7 +1785,17 @@
     $('btnZoomOut').addEventListener('click', () => zoomAt(1 / 1.25));
     $('btnZoomFit').addEventListener('click', resetView);
     $('btnMinimap').addEventListener('click', toggleMinimap);
+    $('btnPhotoDraw').addEventListener('click', () => {
+      $('tool').value = 'brush'; S.tool = 'brush'; setStatusForTool(); renderPhoto();
+      status('Кисть включена: рисуйте выделение воды прямо на снимке.');
+    });
     $('btnCrop').addEventListener('click', toggleCrop);
+    $('btnCropApply').addEventListener('click', () => { if (S.crop.ready) finishCrop(); });
+    $('btnCropCancel').addEventListener('click', () => {
+      S.crop.start = S.crop.end = null; S.crop.ready = false;
+      S.crop.handle = null; S.crop.dragOrigin = null; setCropControls(false);
+      renderPhoto(); status('Правка обрезки отменена — снимок не изменён.');
+    });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && S.crop.active) toggleCrop();
     });
@@ -1572,8 +1808,16 @@
       const rect = el.photoCanvas.getBoundingClientRect();
       if (S.crop.active) {
         const pt = screenToImage(e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
-        S.crop.start = { x: clamp(pt.x, 0, S.W), y: clamp(pt.y, 0, S.H) };
-        S.crop.end = { ...S.crop.start };
+        const hit = S.crop.ready ? cropHit(pt) : null;
+        if (hit) {
+          S.crop.handle = hit;
+          S.crop.dragOrigin = { pt, start: { ...S.crop.start }, end: { ...S.crop.end } };
+        } else {
+          S.crop.start = { x: clamp(pt.x, 0, S.W), y: clamp(pt.y, 0, S.H) };
+          S.crop.end = { ...S.crop.start };
+          S.crop.ready = false; S.crop.handle = null; S.crop.dragOrigin = null;
+          setCropControls(false);
+        }
         el.photoCanvas.setPointerCapture(e.pointerId);
         renderPhoto();
         return;
@@ -1604,12 +1848,14 @@
       const rect = el.photoCanvas.getBoundingClientRect();
       const px = e.clientX - rect.left, py = e.clientY - rect.top;
       if (S.crop.active) {
-        if (S.crop.start) {
-          const pt = screenToImage(px, py, rect.width, rect.height);
+        const pt = screenToImage(px, py, rect.width, rect.height);
+        if (S.crop.dragOrigin && S.crop.handle) updateCropByHandle(pt);
+        else if (S.crop.start && !S.crop.ready) {
           S.crop.end = { x: clamp(pt.x, 0, S.W), y: clamp(pt.y, 0, S.H) };
-          renderPhoto();
         }
-        el.cursorInfo.textContent = `x: ${Math.round(S.crop.end ? S.crop.end.x : 0)}, y: ${Math.round(S.crop.end ? S.crop.end.y : 0)}`;
+        renderPhoto();
+        el.cursorInfo.textContent = `x: ${Math.round(pt.x)}, y: ${Math.round(pt.y)}` +
+          (S.crop.ready ? ' · тяните рамку или стороны' : '');
         return;
       }
       if (S.image) {
@@ -1630,7 +1876,17 @@
       }
     });
     const endPhotoPointer = () => {
-      if (S.crop.active && S.crop.start) { finishCrop(); return; }
+      if (S.crop.active && S.crop.start) {
+        const r = cropRect();
+        if (r && r.w >= 10 && r.h >= 10) {
+          S.crop.ready = true; S.crop.handle = null; S.crop.dragOrigin = null;
+          setCropControls(true);
+          status(`Область ${Math.round(r.w)} × ${Math.round(r.h)} px готова. ` +
+            'Можно подвинуть рамку или потянуть за стороны, затем нажмите «Применить обрезку».');
+          renderPhoto();
+        }
+        return;
+      }
       S.painting = false; S.panning = false; S.lastPaint = null; S.lastPointer = null;
       el.photoWrap.classList.remove('panning');
     };
@@ -1658,6 +1914,15 @@
     document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 
     // Карта
+    $('mapViewMode').addEventListener('change', (e) => {
+      S.map.viewMode = e.target.value;
+      applyMapViewMode();
+      status(S.map.viewMode === 'mask'
+        ? 'Показывается только маска водосбора и речной сети.'
+        : S.map.viewMode === 'image'
+          ? 'Показывается только спутниковая подложка.'
+          : 'Показываются подложка, водосбор и речная сеть.');
+    });
     $('mapSource').addEventListener('change', (e) => {
       S.map.source = e.target.value;
       if (S.map.leaflet) {
@@ -1680,7 +1945,19 @@
     $('btnMapZoomOut').addEventListener('click', () => mapZoomBy(-1));
     $('btnMapMinimap').addEventListener('click', toggleMapMinimap);
     $('btnMapMark').addEventListener('click', toggleMapMark);
+    $('btnMapMarkCoord').addEventListener('click', addMapMarkByCoords);
+    $('btnMapDraw').addEventListener('click', toggleMapDraw);
+    $('btnMapDrawClear').addEventListener('click', clearMapDrawings);
     $('btnMapClearMarks').addEventListener('click', clearMapMarks);
+    $('marksList').addEventListener('click', (e) => {
+      const row = e.target.closest('.mark-row');
+      if (!row) return;
+      const i = Number(row.dataset.mark);
+      const act = e.target.dataset.markAct;
+      if (act === 'rename') renameMapMark(i);
+      else if (act === 'delete') deleteMapMark(i);
+      else if (act === 'goto') gotoMapMark(i);
+    });
     $('btnNdwi').addEventListener('click', toggleNdwiLayer);
     $('btnWaterSelect').addEventListener('click', selectWaterObjects);
     $('btnMapCatch').addEventListener('click', mapAnalyze);
@@ -1703,6 +1980,13 @@
 
     el.mapCanvas.addEventListener('pointerdown', (e) => {
       if (S.map.leaflet || !S.map.geo) return;
+      if (S.map.drawMode) {
+        const g = mapGeoAt(e.clientX - el.mapCanvas.getBoundingClientRect().left,
+          e.clientY - el.mapCanvas.getBoundingClientRect().top);
+        S.map.drawCurrent = [{ lat: g.lat, lon: g.lon }];
+        el.mapCanvas.setPointerCapture(e.pointerId);
+        return;
+      }
       const rect = el.mapCanvas.getBoundingClientRect();
       S.map.dragStart = { x: e.clientX, y: e.clientY, px: e.clientX - rect.left, py: e.clientY - rect.top };
       S.map.moved = false;
@@ -1710,6 +1994,13 @@
     });
     el.mapCanvas.addEventListener('pointermove', (e) => {
       if (S.map.leaflet) return;
+      if (S.map.drawMode && S.map.drawCurrent) {
+        const rr = el.mapCanvas.getBoundingClientRect();
+        const g = mapGeoAt(e.clientX - rr.left, e.clientY - rr.top);
+        S.map.drawCurrent.push({ lat: g.lat, lon: g.lon });
+        renderMap();
+        return;
+      }
       const rect = el.mapCanvas.getBoundingClientRect();
       if (S.map.dragStart) {
         const dx = e.clientX - S.map.dragStart.x, dy = e.clientY - S.map.dragStart.y;
@@ -1725,6 +2016,12 @@
     });
     el.mapCanvas.addEventListener('pointerup', (e) => {
       if (S.map.leaflet) return;
+      if (S.map.drawMode && S.map.drawCurrent) {
+        if (S.map.drawCurrent.length > 1) S.map.drawings.push(S.map.drawCurrent);
+        S.map.drawCurrent = null;
+        rebuildDrawLayer();
+        return;
+      }
       const st = S.map.dragStart;
       S.map.dragStart = null;
       if (!st || !S.map.geo) return;
@@ -1935,6 +2232,14 @@
       с вероятностной клетчаткой. Формат A4, Times New Roman, нумерация страниц.
       На GitHub Pages «Сохранить отчёт» открывает окно печати браузера — выберите
       «Сохранить как PDF».</p>
+      <p><b>Методика СП 33-101-2003.</b> Кривая обеспеченности строится по
+      распределению Пирсона III типа: k<sub>p</sub> = 1 + Φ<sub>P</sub>·C<sub>v</sub>,
+      Φ<sub>P</sub> = z<sub>P</sub> + (C<sub>s</sub>/6)(z<sub>P</sub>² − 1),
+      Q<sub>P</sub> = k<sub>p</sub>·Q<sub>ср</sub>. В программу заложена расчётная
+      таблица k<sub>p</sub> приложения Ж для стандартных отношений
+      C<sub>s</sub>/C<sub>v</sub> = 0; 0,5; 1; 1,5; 2; 3 — она показывается в
+     результатах расчёта (блок «СП 33-101-2003 — таблица k<sub>p</sub>») и включается
+      в PDF как таблица 6.</p>
       <h2>6. Что именно делает каждая кнопка и поле</h2>
       <table>
         <thead><tr><th>Элемент</th><th>Действие и влияние</th></tr></thead>
@@ -2049,8 +2354,7 @@ D после обрезки нужно пересчитать заново.`,
 «Способом выделения», «Допуском» и флажком «Только крупнейшая
 область».
 Внимание: ручные правки ластиком/кистью при этом теряются.`,
-    'btnAnalyze': `Метод Кантора (квадраты) (Новикова, Булякова,
-2024; обоснование — Балханов В.К., 2013, гл. 2 § 2).
+    'btnAnalyze': `Метод Кантора (квадраты).
 Изображение покрывается сеткой n×n, n увеличивается
 на 1 за шаг; ε = side/n. N(ε) — число клеток, по которым
 идёт линия реки. Прямая по точкам (log 1/ε, log N),
@@ -2202,12 +2506,31 @@ N(ε) на малых размерах ячеек и завышают D.
     mapLat: 'Широта центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.',
     mapLon: 'Долгота центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.'
   };
+  const DEFAULT_TIPS = {
+    btnCropApply: 'Применить выбранную область обрезки. До нажатия снимок не меняется — рамку можно тянуть и редактировать.',
+    btnCropCancel: 'Отменить правку обрезки: снимок останется прежним.',
+    btnPhotoDraw: 'Кисть: рисуйте выделение воды прямо на снимке; ластик удаляет лишнее.',
+    mapViewMode: 'Что показывать после построения водосбора: подложку вместе с маской, только спутник или только маску водосбора и речной сети.',
+    markLat: 'Широта новой метки в градусах (−85…85).',
+    markLon: 'Долгота новой метки в градусах (−180…180).',
+    btnMapMarkCoord: 'Поставить метку по введённым координатам и центрировать на ней карту.',
+    btnMapDraw: 'Режим свободного рисования поверх карты: ведите линию ЛКМ, как в ГИС.',
+    btnMapDrawClear: 'Удалить все нарисованные на карте линии.',
+    btnMapCatch: 'Построить предварительную область водосбора и речную сеть по ЦМР.',
+    btnMapDim: 'Рассчитать фрактальную размерность главного русла по методу квадратов Кантора.',
+    btnMapPdf: 'Сформировать PDF-отчёт по карте, водосбору и руслу.',
+    btnNdwi: 'Показать или скрыть слой NDWI (B03/B08) по Sentinel-2 через Planetary Computer.',
+    btnWaterSelect: 'Выделить водные объекты по порогу NDWI и показать их площадь.',
+    ndwiThreshold: 'Порог NDWI: вода учитывается при NDWI ≥ выбранного значения.',
+    mapRelief: 'Отмывка рельефа по ЦМР Planetary Computer; она же используется для расчёта водосбора.',
+    mapSource: 'Основной слой — Sentinel-2 L2A через Planetary Computer, резерв — Esri / Google.'
+  };
   function initTooltips() {
-    document.querySelectorAll('button').forEach((btn) => {
-      const key = btn.id || btn.dataset.act || btn.dataset.tab ||
-        btn.dataset.rotate || btn.dataset.menu || btn.textContent.trim();
-      const tip = TIPS[key];
-      if (tip) btn.title = tip;
+    document.querySelectorAll('button, select, input').forEach((node) => {
+      const key = node.id || node.dataset.act || node.dataset.tab ||
+        node.dataset.rotate || node.dataset.menu || node.textContent.trim();
+      const tip = TIPS[key] || FIELD_TIPS[key] || DEFAULT_TIPS[key];
+      if (tip && !node.title) node.title = tip;
     });
     Object.keys(FIELD_TIPS).forEach((id) => {
       const node = $(id);
@@ -2227,6 +2550,7 @@ N(ε) на малых размерах ячеек и завышают D.
       upd();
     }
     initTooltips();
+    renderMarksList();
     setStatusForTool();
     bindEvents();
     renderPhoto();

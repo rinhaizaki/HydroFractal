@@ -15,7 +15,7 @@ from PIL import Image
 
 from matplotlib.figure import Figure
 
-from core.hydro_core import MAJOR_P, stream_stats_from_D
+from core.hydro_core import MAJOR_P, sp33_kp_table, stream_stats_from_D
 
 HAVE_MPL = True
 PALETTE = {
@@ -259,10 +259,7 @@ def write_report(self, path):
         # основные значения P (подписываются на оси)
         major_p = MAJOR_P
         # промежуточные значения P (тонкие линии без подписей)
-        minor_p = [0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9, 1.5,
-                   3, 4, 6, 7, 8, 9, 15, 25, 35, 45, 55, 65, 75, 85,
-                   92, 93, 94, 96, 97, 98.5, 99.2, 99.3, 99.4, 99.6,
-                   99.7, 99.8]
+        minor_p = [1.5, 3, 6, 15, 25, 35, 45, 65, 85, 97]
 
         def __init__(self, width, height, kp_func=None, major_labels=True):
             Flowable.__init__(self)
@@ -306,17 +303,18 @@ def write_report(self, path):
             # ---------- горизонтальная сетка по k_p ----------
             if self.kp_func is not None:
                 lo, hi = self._kp_range()
-                # шаг 0.2 — промежуточные линии, 1.0 — основные
-                k = math.ceil(round(lo / 0.2, 9)) * 0.2
+                # шаг 0.5 — промежуточные линии, 1.0 — основные
+                # (клетка крупнее, чем в старой версии с шагом 0.2)
+                k = math.ceil(round(lo / 0.5, 9)) * 0.5
                 while k <= hi + 1e-9:
                     y = self._kp_to_y(k, y0, y1)
                     if y0 - 0.5 <= y <= y1 + 0.5:
                         is_major = abs(k - round(k)) < 1e-6
-                        c.setLineWidth(0.55 if is_major else 0.22)
+                        c.setLineWidth(0.7 if is_major else 0.3)
                         c.setStrokeColor(colors.black if is_major
-                                         else colors.Color(0.72, 0.72, 0.72))
+                                         else colors.Color(0.78, 0.78, 0.78))
                         c.line(x0, y, x1, y)
-                    k += 0.2
+                    k += 0.5
             else:
                 n_h = 30
                 c.setLineWidth(0.22)
@@ -920,7 +918,7 @@ def write_report(self, path):
         "VI. Теоретическая кривая обеспеченности (Пирсона III типа)"))
     grid_w = landscape(A4)[0] - 3 * cm - 1.5 * cm
     # почти вся страница: остаётся только заголовок и подпись рисунка
-    grid_h = landscape(A4)[1] - 2 * cm - 2 * cm - 3.2 * cm
+    grid_h = landscape(A4)[1] - 2 * cm - 2 * cm - 2.0 * cm
     story.append(ProbGrid(grid_w, grid_h, kp_func=lambda p: kp_by_p[p],
                           major_labels=False))
     story.append(fig_caption(
@@ -957,6 +955,32 @@ def write_report(self, path):
         "k<sub>p</sub>·Q<sub>ср</sub> — расход воды заданной обеспеченности, "
         "м³/с. Строки соответствуют основным значениям P рисунка 4.", note))
 
+    # ---------- методика и таблицы СП 33-101-2003, приложение Ж ----------
+    story.append(Paragraph(
+        "Методика определения кривых обеспеченности по СП 33-101-2003 "
+        "(приложение Ж): для заданных C<sub>v</sub> и relation C<sub>s</sub>/C<sub>v</sub> "
+        "по таблицам приложения Ж берутся модульные коэффициенты k<sub>p</sub>, "
+        "затем Q<sub>P</sub> = k<sub>p</sub>·Q<sub>ср</sub>. В таблице ниже "
+        "приведены расчётные ординаты для данного C<sub>v</sub> и стандартных "
+        "отношений C<sub>s</sub>/C<sub>v</sub>; промежуточные значения "
+        "интерполируются линейно.".replace("relation", "отношению"), body))
+    ratios = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0)
+    sp_rows = [[ "P, %", *[f"C<sub>s</sub>/C<sub>v</sub> = {r:g}".replace(".", ",")
+                         for r in ratios] ]]
+    for row in sp33_kp_table(cv):
+        sp_rows.append([("%g" % row[0]).replace(".", ","),
+                        *[fmt(v, 2) for v in row[1:]]])
+    story.append(tbl_caption(
+        "Таблица 6 — k<sub>p</sub> по СП 33-101-2003 "
+        "(приложение Ж, расчётные ординаты)", markup=True))
+    story.append(table(sp_rows, [2.2 * cm] + [2.3 * cm] * len(ratios),
+                       header=True, center=True, keep_whole=True, markup=True))
+    story.append(Paragraph(
+        "Примечание: при C<sub>s</sub> = 0 распределение симметрично; "
+        "с ростом C<sub>s</sub>/C<sub>v</sub> увеличиваются ординаты малой "
+        "обеспеченности (паводки) и уменьшаются ординаты высокой "
+        "обеспеченности (межень).", note))
+
     story.append(PageBreak())      # пояснения — на отдельной странице
     story.append(sect("Порядок вычисления", level=2))
     story.append(Paragraph(
@@ -991,7 +1015,7 @@ def write_report(self, path):
         f"В формулах ({p_no[0] - 1}) и ({p_no[0]}) z<sub>P</sub> — квантиль "
         "стандартного нормального распределения для обеспеченности P; "
         "значения Φ<sub>P</sub> определяются по стандартным таблицам "
-        "(например, СП 33-101-2003). Модульные коэффициенты "
+        "СП 33-101-2003 (приложение Ж). Модульные коэффициенты "
         "k<sub>p</sub> образуют вспомогательную шкалу перехода от "
         "обеспеченности к расходу.", body))
 
