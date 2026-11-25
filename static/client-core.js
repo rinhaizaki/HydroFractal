@@ -938,16 +938,46 @@
     const t = lonlatToTile(lonlat.lon, lonlat.lat, geo.z);
     return [(t.x - geo.x0) * TILE, (t.y - geo.y0) * TILE];
   }
-  function overlayMap(baseCanvas, geo, dgeo, catchment, network, line, outletPx) {
+  function dilateMask(mask, W, H, radius) {
+    let cur = mask;
+    for (let r = 0; r < (radius || 1); r++) {
+      const out = new Uint8Array(W * H);
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          let v = 0;
+          for (let dy = -1; dy <= 1 && !v; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const ny = y + dy, nx = x + dx;
+              if (ny >= 0 && ny < H && nx >= 0 && nx < W && cur[ny * W + nx]) { v = 1; break; }
+            }
+          }
+          out[y * W + x] = v;
+        }
+      }
+      cur = out;
+    }
+    return cur;
+  }
+  function overlayMap(baseCanvas, geo, dgeo, catchment, network, line, outletPx, preview) {
     const ctx = baseCanvas.getContext('2d');
     const W = baseCanvas.width, H = baseCanvas.height;
     ctx.save();
+    const cellSize = Math.max(1.4, TILE / Math.pow(2, geo.z - dgeo.z));
+    if (preview) {
+      ctx.fillStyle = 'rgba(70,130,200,.24)';
+      for (let i = 0; i < preview.length; i++) {
+        if (!preview[i]) continue;
+        const [px, py] = demAtScreen(geo, dgeo, (i / dgeo.w) | 0, i % dgeo.w);
+        if (px < -8 || py < -8 || px > W + 8 || py > H + 8) continue;
+        ctx.fillRect(px, py, cellSize, cellSize);
+      }
+    }
     ctx.fillStyle = 'rgba(156,167,90,.30)';
     for (let i = 0; i < catchment.length; i++) {
       if (!catchment[i]) continue;
       const [px, py] = demAtScreen(geo, dgeo, (i / dgeo.w) | 0, i % dgeo.w);
       if (px < -8 || py < -8 || px > W + 8 || py > H + 8) continue;
-      ctx.fillRect(px, py, Math.max(1.4, TILE / Math.pow(2, geo.z - dgeo.z)), Math.max(1.4, TILE / Math.pow(2, geo.z - dgeo.z)));
+      ctx.fillRect(px, py, cellSize, cellSize);
     }
     ctx.fillStyle = 'rgba(139,100,49,.75)';
     for (let i = 0; i < network.length; i++) {
@@ -1007,8 +1037,9 @@
       const result = cleanResult(r, 'skeleton');
       const tp = lonlatToTile(outletLon, outletLat, geo.z);
       const overlayCanvas = canvasContext(W, H);
+      const previewMask = dilateMask(catchMask, dW, dH, 2);
       const overlay = overlayMap(overlayCanvas.canvas, geo, dgeo, catchMask, net, ch.line,
-        [(tp.x - geo.x0) * TILE, (tp.y - geo.y0) * TILE]);
+        [(tp.x - geo.x0) * TILE, (tp.y - geo.y0) * TILE], previewMask);
       const reportCanvas = canvasContext(W, H);
       const channelMask = canvasContext(dW, dH);
       const maskPixels = channelMask.ctx.createImageData(dW, dH);
@@ -1033,6 +1064,7 @@
             area_km2: Math.round(catchResult.count * cell * cell / 1e6 * 1000) / 1000,
             channel_km: Math.round(ch.count * cell / 1000 * 1000) / 1000,
             cells: catchResult.count, line_cells: ch.count, network_cells: netCount,
+            preview_cells: previewMask.reduce((a, b) => a + b, 0),
             threshold: Math.round(threshold * 100) / 100, strahler,
             cell_m: Math.round(cell * 100) / 100, dem_zoom: dgeo.z,
             outlet_lat: Math.round(outletLat * 1e5) / 1e5,
@@ -1159,6 +1191,11 @@
       const win = window.open('', '_blank');
       if (!win) throw new Error('Разрешите всплывающие окна для сохранения отчёта.');
       const img = (src, cap) => src ? `<div class="figure"><img src="${src}" alt=""><div class="fig-cap">${cap}</div></div>` : '';
+      const mapLegend = (payload.source_name === 'карта и водосбор' ||
+        /карте/i.test(payload.title || ''))
+        ? '<p class="note">Обозначения на карте: синий — предварительная область водосбора, ' +
+          'оливковый — уточнённый водосбор, коричневый — речная сеть, ' +
+          'бордовый — главное русло, красный маркер «1» — створ.</p>' : '';
       win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8">
         <title>Отчёт Гидрофрактал</title><style>
         @page { size: A4; margin: 2cm 1.5cm 2cm 3cm; @bottom-center { content: counter(page); font-family: "Times New Roman"; font-size: 12pt; } }
@@ -1231,7 +1268,10 @@
         </div>
         <div class="page">
           <h2>IV. Снимок с выделенной маской и маска реки</h2>
-          ${img(payload.image, 'Рисунок 2 — Снимок с выделенной маской воды (зелёный) и точкой расхода (створ, маркер «1»)')}
+          ${img(payload.image, mapLegend
+            ? 'Рисунок 2 — Карта с водосбором, речной сетью и главным руслом'
+            : 'Рисунок 2 — Снимок с выделенной маской воды (зелёный) и точкой расхода (створ, маркер «1»)')}
+          ${mapLegend}
         </div>
         <div class="page">
           ${img(maskImg, 'Рисунок 3 — Маска реки (чёрный — вода, белый — фон)')}

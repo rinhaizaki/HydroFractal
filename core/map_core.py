@@ -628,12 +628,19 @@ def analyse_map(view_geo, outlet_lon, outlet_lat,
             "Створ попал на водораздел или в бессточную впадину.\n"
             "Кликните по видимому руслу реки.")
 
+    try:
+        from scipy.ndimage import binary_dilation
+        preview = binary_dilation(catch, iterations=2)
+    except Exception:
+        preview = catch.copy()
+
     thr = max(3.0, threshold_frac * float(acc[catch].max()))
     net = catch & (acc >= thr)
     line = main_channel(fdir, acc, catch, oy, ox)
 
     stats = {
         "cells": int(catch.sum()),
+        "preview_cells": int(preview.sum()),
         "area_km2": float(catch.sum()) * cell * cell / 1e6,
         "line_cells": int(line.sum()),
         "channel_km": float(line.sum()) * cell / 1000.0,
@@ -649,6 +656,7 @@ def analyse_map(view_geo, outlet_lon, outlet_lat,
     return {
         "dem": dem, "filled": filled, "fdir": fdir, "acc": acc,
         "catchment": catch, "network": net, "main_line": line,
+        "preview": preview,
         "outlet": (ox, oy), "dgeo": dgeo, "stats": stats,
         "outlet_lon": outlet_lon, "outlet_lat": outlet_lat,
     }
@@ -659,7 +667,7 @@ def analyse_map(view_geo, outlet_lon, outlet_lat,
 # ---------------------------------------------------------------------------
 def overlay_on_image(base_img, geo, dgeo, catchment=None,
                      main_line=None, network=None, show_relief=False,
-                     dem=None):
+                     dem=None, preview=None):
     """Кладёт слои расчёта на картинку карты. Возвращает PIL.Image."""
     img = base_img.convert("RGB").copy()
     if show_relief and dem is not None:
@@ -674,12 +682,17 @@ def overlay_on_image(base_img, geo, dgeo, catchment=None,
     draw = ImageDraw.Draw(img, "RGBA")
 
     ch, cw = catchment.shape
-    # найти границы водосбора в пикселях рельефа
+    # найти границы водосбора в пикселях рельефа (включая предварительную область)
     ys, xs = np.nonzero(catchment)
+    if preview is not None:
+        pys, pxs = np.nonzero(preview)
+        if pys.size:
+            ys = np.concatenate([ys, pys])
+            xs = np.concatenate([xs, pxs])
     if ys.size == 0:
         return img
-    r0, r1 = ys.min(), ys.max()
-    c0, c1 = xs.min(), xs.max()
+    r0, r1 = int(ys.min()), int(ys.max())
+    c0, c1 = int(xs.min()), int(xs.max())
 
     def dem_to_screen(row, col):
         # пиксель рельефа → lon/lat → тайл-координаты окна → пиксели окна
@@ -698,14 +711,21 @@ def overlay_on_image(base_img, geo, dgeo, catchment=None,
     cell_px = max(1.0, abs(px1 - px0), abs(py1 - py0))
     step = max(1, int(round(cell_px)))
     # заливаем ровно клетками экрана: соседние прямоугольники стыкуются
-    for row in range(r0, r1 + 1, step):
-        for col in range(c0, c1 + 1, step):
-            if not catchment[row, col]:
-                continue
-            px, py = dem_to_screen(row, col)
-            if -step <= px <= W + step and -step <= py <= H + step:
-                draw.rectangle([px, py, px + cell_px + 0.6, py + cell_px + 0.6],
-                               fill=(156, 167, 90, 78))
+    def fill_mask(mask, color):
+        for row in range(r0, r1 + 1, step):
+            for col in range(c0, c1 + 1, step):
+                if row >= mask.shape[0] or col >= mask.shape[1] or not mask[row, col]:
+                    continue
+                px, py = dem_to_screen(row, col)
+                if -step <= px <= W + step and -step <= py <= H + step:
+                    draw.rectangle([px, py, px + cell_px + 0.6, py + cell_px + 0.6],
+                                   fill=color)
+
+    # синий — предварительная (расширенная) область водосбора
+    if preview is not None:
+        fill_mask(preview, (70, 130, 200, 55))
+    # оливковый — уточнённый водосбор
+    fill_mask(catchment, (156, 167, 90, 78))
 
     # --- контур водосбора ---
     from scipy.ndimage import binary_erosion
