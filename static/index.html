@@ -11,7 +11,7 @@
       /[?&]static=1/.test(location.search);
   </script>
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css?v=1">
-  <link rel="stylesheet" href="styles.css?v=5">
+  <link rel="stylesheet" href="styles.css?v=6">
 </head>
 <body>
 <div class="app-shell">
@@ -127,6 +127,7 @@
       <button class="btn small" data-rotate="rot2">180°</button>
       <button class="btn small" data-rotate="fliph">⇋ отразить</button>
       <button class="btn small" data-rotate="flipv">⇵ отразить</button>
+      <button class="btn small" id="btnCrop">✂ Обрезать снимок</button>
       <span class="sep"></span>
       <label class="field-label" for="maxDivs">Число делений сетки:</label>
       <input type="range" id="maxDivs" min="10" max="120" value="60" class="range short">
@@ -238,6 +239,9 @@
         <label class="field-label" for="mapLon">Долгота</label>
         <input type="number" id="mapLon" class="num coord-num" value="30.33510" step="0.00001" min="-180" max="180" title="Долгота центра карты, градусы">
         <button class="btn small" id="btnMapSearch" title="Найти место по координатам (центр карты, без постановки створа)">🔎 Найти</button>
+        <input type="text" id="mapMarkText" class="mark-label" placeholder="Подпись метки" size="14" title="Подпись для новой метки на карте">
+        <button class="btn small" id="btnMapMark" title="Режим меток: кликайте по карте, чтобы оставить отметки">📌 Метка</button>
+        <button class="btn small" id="btnMapClearMarks" title="Удалить все метки с карты">🗑 Метки</button>
         <button class="btn small" id="btnMapHome" title="Вернуться к центру — Санкт-Петербург">⌂</button>
         <button class="btn small" id="btnMapZoomOut" title="Уменьшить масштаб карты">🔍−</button>
         <button class="btn small" id="btnMapZoomIn" title="Увеличить масштаб карты">🔍+</button>
@@ -306,13 +310,14 @@
     <h2 id="modalTitle">Инструкция</h2>
     <div id="modalBody"></div>
     <button class="btn accent" id="modalOk">Понятно</button>
+    <button class="btn" id="btnHelpPdf">📄 Скачать инструкцию (PDF)</button>
   </div>
 </div>
 
 <div class="toast" id="toast" hidden></div>
 
 <script src="vendor/leaflet/leaflet.js?v=1"></script>
-<script src="client-core.js?v=8"></script>
-<script src="app.js?v=10"></script>
+<script src="client-core.js?v=9"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>

@@ -1132,7 +1132,7 @@
       out += `<text x="${x}" y="${y1 + 14}" text-anchor="middle" font-size="11" font-family="Times New Roman">${String(p).replace('.', ',')}</text>`;
     });
     out += `<text x="${(x0 + x1) / 2}" y="${H - 8}" text-anchor="middle" font-size="14" font-family="Times New Roman">Обеспеченность P, %</text>
-      <text transform="translate(20,${(y0 + y1) / 2}) rotate(-90)" text-anchor="middle" font-size="14" font-family="Times New Roman">Модульный коэффициент K<tspan baseline-shift="sub" font-size="10">P</tspan></text>
+      <text transform="translate(20,${(y0 + y1) / 2}) rotate(-90)" text-anchor="middle" font-size="14" font-family="Times New Roman">Модульный коэффициент k<tspan baseline-shift="sub" font-size="10">p</tspan></text>
       </svg>`;
     return out;
   }
@@ -1192,11 +1192,18 @@
       const win = window.open('', '_blank');
       if (!win) throw new Error('Разрешите всплывающие окна для сохранения отчёта.');
       const img = (src, cap) => src ? `<div class="figure"><img src="${src}" alt=""><div class="fig-cap">${cap}</div></div>` : '';
-      const mapLegend = (payload.source_name === 'карта и водосбор' ||
-        /карте/i.test(payload.title || ''))
+      const mapReport = (payload.source_name === 'карта и водосбор' ||
+        /карте/i.test(payload.title || ''));
+      const mapLegend = mapReport
         ? '<p class="note">Обозначения на карте: синий — предварительная область водосбора, ' +
           'оливковый — уточнённый водосбор, коричневый — речная сеть, ' +
           'бордовый — главное русло, красный маркер «1» — створ.</p>' : '';
+      const marks = mapReport ? (payload.marks || []) : [];
+      const marksHtml = marks.length
+        ? '<p class="note">Метки на карте:<br>' + marks.map((m, i) =>
+            `${i + 2}. ${escapeHtml(m.label || 'без подписи')} — ` +
+            `${Number(m.lat).toFixed(5)}° N, ${Number(m.lon).toFixed(5)}° E`).join('<br>') + '</p>'
+        : '';
       win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8">
         <title>Отчёт Гидрофрактал</title><style>
         @page { size: A4; margin: 2cm 1.5cm 2cm 3cm; @bottom-center { content: counter(page); font-family: "Times New Roman"; font-size: 12pt; } }
@@ -1269,10 +1276,11 @@
         </div>
         <div class="page">
           <h2>IV. Снимок с выделенной маской и маска реки</h2>
-          ${img(payload.image, mapLegend
+          ${img(payload.image, mapReport
             ? 'Рисунок 2 — Карта с водосбором, речной сетью и главным руслом'
             : 'Рисунок 2 — Снимок с выделенной маской воды (зелёный) и точкой расхода (створ, маркер «1»)')}
           ${mapLegend}
+          ${marksHtml}
         </div>
         <div class="page">
           ${img(maskImg, 'Рисунок 3 — Маска реки (чёрный — вода, белый — фон)')}
@@ -1318,32 +1326,32 @@
           <h2>VI. Теоретическая кривая обеспеченности (Пирсона III типа)</h2>
           <div class="figure">${probabilityGrid()}
           <div class="fig-cap">Рисунок 4 — Теоретическая кривая обеспеченности (Пирсона III типа):
-          P, % — модульный коэффициент K<sub>P</sub></div></div>
+          P, % — модульный коэффициент k<sub>p</sub></div></div>
         </div>
         <div class="page">
           <h2>VII. Расчёт ординат теоретической кривой обеспеченности</h2>
           <p>В таблице 5 приведены ординаты теоретической кривой: обеспеченность P, модульные
-          коэффициенты K<sub>P</sub> и соответствующие расходы воды Q<sub>P</sub>.</p>
+          коэффициенты k<sub>p</sub> и соответствующие расходы воды Q<sub>P</sub>.</p>
           ${tbl('Таблица 5 — Ординаты теоретической кривой',
-            ['Обеспеченность P, %', 'Модульный коэффициент K<sub>P</sub>', 'Расход воды Q<sub>P</sub>, м³/с'], rows5)}
-          <p class="note">Пояснение: P — обеспеченность (вероятность превышения), %; K<sub>P</sub> —
-          модульный коэффициент; Q<sub>P</sub> = K<sub>P</sub>·Q<sub>ср</sub> — расход воды заданной
+            ['Обеспеченность P, %', 'Модульный коэффициент k<sub>p</sub>', 'Расход воды Q<sub>P</sub>, м³/с'], rows5)}
+          <p class="note">Пояснение: P — обеспеченность (вероятность превышения), %; k<sub>p</sub> —
+          модульный коэффициент; Q<sub>P</sub> = k<sub>p</sub>·Q<sub>ср</sub> — расход воды заданной
           обеспеченности, м³/с. Строки соответствуют рисунку 4.</p>
         </div>
         <div class="page">
           <h2>Порядок вычисления</h2>
           <p>Теоретическая кривая строится по трём характеристикам стока — Q<sub>ср</sub>, C<sub>v</sub> и C<sub>s</sub>.
           Расход воды обеспеченности P вычисляется по формуле</p>
-          <p class="formula">Q<sub>P</sub> = (Φ<sub>P</sub>·C<sub>v</sub> + 1)·Q<sub>ср</sub> = K<sub>P</sub>·Q<sub>ср</sub> <span class="num">(9)</span></p>
+          <p class="formula">Q<sub>P</sub> = (Φ<sub>P</sub>·C<sub>v</sub> + 1)·Q<sub>ср</sub> = k<sub>p</sub>·Q<sub>ср</sub> <span class="num">(9)</span></p>
           <p class="note">где Q<sub>P</sub> — расход воды обеспеченности P, м³/с; Φ<sub>P</sub> — коэффициент
           Фостера–Рыбкина; C<sub>v</sub> — коэффициент вариации; Q<sub>ср</sub> — средний многолетний
-          расход; K<sub>P</sub> — модульный коэффициент.</p>
+          расход; k<sub>p</sub> — модульный коэффициент.</p>
           <p class="formula">Φ<sub>P</sub> = z<sub>P</sub> + (C<sub>s</sub>/6)·(z<sub>P</sub>² − 1) <span class="num">(10)</span></p>
           <p class="note">где Φ<sub>P</sub> — коэффициент Фостера–Рыбкина; z<sub>P</sub> — квантиль
           стандартного нормального распределения для обеспеченности P; C<sub>s</sub> — коэффициент
           асимметрии.</p>
-          <p class="formula">K<sub>P</sub> = Φ<sub>P</sub>·C<sub>v</sub> + 1 <span class="num">(11)</span></p>
-          <p class="note">где K<sub>P</sub> — модульный коэффициент, показывающий, во сколько раз расход
+          <p class="formula">k<sub>p</sub> = Φ<sub>P</sub>·C<sub>v</sub> + 1 <span class="num">(11)</span></p>
+          <p class="note">где k<sub>p</sub> — модульный коэффициент, показывающий, во сколько раз расход
           обеспеченности P отличается от Q<sub>ср</sub>; Φ<sub>P</sub> — коэффициент Фостера–Рыбкина;
           C<sub>v</sub> — коэффициент вариации.</p>
           <p class="note">В формулах (10) и (11) z<sub>P</sub> — квантиль стандартного нормального
