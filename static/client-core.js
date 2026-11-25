@@ -709,8 +709,9 @@
     // Одна и та же локальная подложка используется, если тайлы не пришли,
     // и как «чистая» копия для PDF (оригинальные тайлы загрязняют canvas).
     const safe = syntheticBase(geo, source);
+    const skipTiles = !!params.skip_tiles;   // подложку грузит Leaflet
     const sub = ['a', 'b', 'c'];
-    const jobs = coords.map(([x, y]) => {
+    const jobs = skipTiles ? [] : coords.map(([x, y]) => {
       const template = SOURCES[source].url;
       const urls = [template];
       if (source === 'esri') {
@@ -736,7 +737,7 @@
     });
     return Promise.all(jobs).then((results) => {
       const tiles = results.filter(Boolean);
-      const demo = tiles.length === 0;
+      const demo = !skipTiles && tiles.length === 0;
       const used = {};
       tiles.forEach((t) => { used[t.sourceIndex] = (used[t.sourceIndex] || 0) + 1; });
       const mainSource = Object.keys(used)

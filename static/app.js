@@ -24,6 +24,7 @@
     mapTableWrap: $('mapTableWrap'), mapTableDetails: $('mapTableDetails'),
     mapCredit: $('mapCredit'), mapZoom: $('mapZoom'), mapCoords: $('mapCoords'),
     mapLat: $('mapLat'), mapLon: $('mapLon'),
+    leafletWrap: $('leafletMap'),
     mapMinimapBox: $('mapMinimapBox'), mapMinimapCanvas: $('mapMinimapCanvas'),
     status: $('status'), statusRight: $('statusRight'),
     toast: $('toast'), modal: $('modal'), modalTitle: $('modalTitle'), modalBody: $('modalBody'),
@@ -49,7 +50,10 @@
       credit: 'Карта: Esri · Рельеф: AWS Terrain Tiles', demo: false, cell: 0,
       panDx: 0, panDy: 0, dragStart: null, moved: false, loading: false,
       tiles: [], reliefImg: null, overlayImg: null, reportImage: null, mask: null, width: 0, height: 0,
-      minimapVisible: false, miniKey: '', miniResp: null
+      minimapVisible: false, miniKey: '', miniResp: null,
+      leaflet: null, tileLayer: null, layerIndex: 0, tileErrors: 0,
+      leafletCredit: 'Снимок: Esri, Maxar, Earthstar Geographics',
+      overlayGeo: null, reliefGeo: null, moveTimer: null
     }
   };
 
@@ -669,6 +673,103 @@
     const n = Math.pow(2, z);
     return { lon: x / n * 360 - 180, lat: Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180 / Math.PI };
   }
+  const LEAFLET_SOURCES = {
+    esri: [
+      { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        credit: 'Снимок: Esri, Maxar, Earthstar Geographics' },
+      { url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        credit: 'Снимок: Esri, Maxar, Earthstar Geographics' },
+      { url: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        credit: 'Снимок: Google Satellite' },
+      { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+        credit: 'Карта: © OpenStreetMap (резерв)' }
+    ],
+    topo: [
+      { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+        credit: 'Карта: © OpenTopoMap (CC-BY-SA), данные © OpenStreetMap' },
+      { url: 'https://tile.opentopomap.org/{z}/{x}/{y}.png',
+        credit: 'Карта: © OpenTopoMap (CC-BY-SA), данные © OpenStreetMap' },
+      { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+        credit: 'Карта: © OpenStreetMap (резерв)' }
+    ]
+  };
+  function viewGeoPixels(lon, lat, z, w, h) {
+    const c = tileXY(lon, lat, z);
+    return { x0: c.x - w / (2 * 256), y0: c.y - h / (2 * 256), z, w, h };
+  }
+  function setLeafletLayer(index) {
+    if (!S.map.leaflet || !window.L) return;
+    const list = LEAFLET_SOURCES[S.map.source] || LEAFLET_SOURCES.esri;
+    S.map.layerIndex = clamp(index, 0, list.length - 1);
+    S.map.tileErrors = 0;
+    const src = list[S.map.layerIndex];
+    if (S.map.tileLayer) S.map.leaflet.removeLayer(S.map.tileLayer);
+    S.map.tileLayer = L.tileLayer(src.url, {
+      maxZoom: 19, minZoom: 2, subdomains: 'abc',
+      attribution: src.credit
+    });
+    S.map.tileLayer.on('tileload', () => { S.map.tileErrors = 0; });
+    S.map.tileLayer.on('tileerror', () => {
+      S.map.tileErrors++;
+      if (S.map.tileErrors >= 3 && S.map.layerIndex < list.length - 1) {
+        setLeafletLayer(S.map.layerIndex + 1);
+        status(`Основной источник тайлов недоступен — включён резерв: ${src.credit}.`);
+      }
+    });
+    S.map.tileLayer.addTo(S.map.leaflet);
+    S.map.leafletCredit = src.credit;
+    renderMap();
+  }
+  function initLeaflet() {
+    if (!window.L || !el.leafletWrap || S.map.leaflet) return;
+    const map = L.map(el.leafletWrap, {
+      center: [S.map.lat, S.map.lon], zoom: S.map.zoom,
+      zoomControl: false, attributionControl: true,
+      preferCanvas: false, worldCopyJump: true
+    });
+    S.map.leaflet = map;
+    el.mapWrap.classList.add('leaflet-mode');
+    el.mapPlaceholder.hidden = true;
+    setLeafletLayer(0);
+    const sync = () => {
+      const c = map.getCenter();
+      S.map.lat = c.lat; S.map.lon = c.lng; S.map.zoom = map.getZoom();
+      updateMapCoords();
+      renderMap();
+      clearTimeout(S.map.moveTimer);
+      S.map.moveTimer = setTimeout(() => loadMapView(true), 180);
+      if (S.map.minimapVisible) loadMapMinimap();
+    };
+    map.on('moveend zoomend', sync);
+    map.on('click', (e) => {
+      S.map.outlet = { lon: e.latlng.lng, lat: e.latlng.lat };
+      renderMap();
+      status(`Створ установлен: ${fmt(e.latlng.lat, 5)}° N, ` +
+        `${fmt(e.latlng.lng, 5)}° E. Нажмите «Построить водосбор».`);
+    });
+    setTimeout(() => { map.invalidateSize(); sync(); }, 0);
+  }
+  function centerMapAt(lat, lon, zoom) {
+    const z = zoom === undefined ? S.map.zoom : zoom;
+    if (S.map.leaflet) {
+      S.map.leaflet.setView([lat, lon], z);
+    } else {
+      S.map.lat = lat; S.map.lon = lon; S.map.zoom = z;
+      S.map.panDx = S.map.panDy = 0;
+      updateMapCoords();
+      loadMapView(true);
+    }
+  }
+  function projectOverlay(ctx, img, srcGeo, dstGeo, w, h, alpha) {
+    if (!img || !srcGeo || !dstGeo) return;
+    const k = Math.pow(2, dstGeo.z - srcGeo.z);
+    const dx = (srcGeo.x0 * k - dstGeo.x0) * 256;
+    const dy = (srcGeo.y0 * k - dstGeo.y0) * 256;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(img, dx, dy, srcGeo.w * k, srcGeo.h * k);
+    ctx.restore();
+  }
   function mapGeoAt(sx, sy) {
     const geo = S.map.geo;
     if (!geo) return { lat: S.map.lat, lon: S.map.lon };
@@ -677,9 +778,40 @@
     const py = (sy - S.map.panDy) * geo.h / rect.height;
     return lonLatFromTile(geo.x0 + px / 256, geo.y0 + py / 256, geo.z);
   }
+  function drawOutletMarker(ctx, px, py, label) {
+    ctx.save();
+    ctx.strokeStyle = '#ff3c3c'; ctx.fillStyle = '#ff3c3c'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(px, py, 9, 0, 2 * Math.PI); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(px - 15, py); ctx.lineTo(px + 15, py);
+    ctx.moveTo(px, py - 15); ctx.lineTo(px, py + 15);
+    ctx.stroke();
+    if (label !== false) {
+      ctx.font = 'bold 13px Segoe UI, sans-serif';
+      ctx.fillText('1', px + 13, py - 11);
+    }
+    ctx.restore();
+  }
   function renderMap() {
     const { ctx, w, h } = prepCanvas(el.mapCanvas);
-    el.mapPlaceholder.hidden = !!S.map.img;
+    el.mapPlaceholder.hidden = !!S.map.img || !!S.map.leaflet;
+    if (S.map.leaflet) {
+      // Leaflet рисует подложку; на прозрачном холсте — только расчётные слои.
+      const geo = viewGeoPixels(S.map.lon, S.map.lat, S.map.zoom, w, h);
+      projectOverlay(ctx, S.map.reliefImg, S.map.reliefGeo, geo, w, h, 0.55);
+      projectOverlay(ctx, S.map.overlayImg, S.map.overlayGeo, geo, w, h, 1);
+      if (S.map.outlet) {
+        const p = S.map.leaflet.latLngToContainerPoint(
+          [S.map.outlet.lat, S.map.outlet.lon]);
+        drawOutletMarker(ctx, p.x, p.y, true);
+      }
+      el.mapCredit.textContent = S.map.leafletCredit +
+        ' · Рельеф: Mapzen / AWS Terrain Tiles' +
+        (S.map.demo ? ' · демо-рельеф (нет сети)' : '');
+      el.mapZoom.textContent = `z${S.map.zoom} · ${fmt(S.map.cell, 1)} м/пиксель`;
+      if (S.map.minimapVisible) renderMapMinimap();
+      return;
+    }
     if (!S.map.img) return;
     ctx.drawImage(S.map.img, S.map.panDx, S.map.panDy, w, h);
     const geo = S.map.geo;
@@ -703,15 +835,7 @@
       const t = tileXY(S.map.outlet.lon, S.map.outlet.lat, geo.z);
       const px = ((t.x - geo.x0) * 256) * el.mapCanvas.clientWidth / geo.w + S.map.panDx;
       const py = ((t.y - geo.y0) * 256) * el.mapCanvas.clientHeight / geo.h + S.map.panDy;
-      ctx.save();
-      ctx.strokeStyle = '#ff3c3c'; ctx.fillStyle = '#ff3c3c'; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(px, py, 9, 0, 2 * Math.PI); ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(px - 15, py); ctx.lineTo(px + 15, py);
-      ctx.moveTo(px, py - 15); ctx.lineTo(px, py + 15);
-      ctx.stroke();
-      ctx.font = 'bold 13px Segoe UI, sans-serif'; ctx.fillText('1', px + 13, py - 11);
-      ctx.restore();
+      drawOutletMarker(ctx, px, py, true);
     }
     el.mapCredit.textContent = S.map.credit + (S.map.demo ? ' · демо-рельеф (нет сети)' : '');
     el.mapZoom.textContent = `z${S.map.zoom} · ${fmt(S.map.cell, 1)} м/пиксель`;
@@ -722,7 +846,8 @@
     return {
       lon: S.map.lon, lat: S.map.lat, zoom: S.map.zoom,
       width: Math.max(240, Math.round(rect.width)), height: Math.max(180, Math.round(rect.height)),
-      source: S.map.source, relief: S.map.relief
+      source: S.map.source, relief: S.map.relief,
+      skip_tiles: !!S.map.leaflet
     };
   }
   async function loadMapView(quiet) {
@@ -738,21 +863,27 @@
       S.map.cell = resp.cell_m;
       S.map.demo = !!resp.demo;
       S.map.tiles = resp.tiles || [];
-      S.map.overlayImg = null;
-      S.map.reportImage = null;
-      S.map.reliefImg = null;
       S.map.panDx = S.map.panDy = 0;
       if (resp.relief) {
-        loadImage(resp.relief).then((relief) => { S.map.reliefImg = relief; renderMap(); });
+        loadImage(resp.relief).then((relief) => {
+          S.map.reliefImg = relief;
+          S.map.reliefGeo = resp.geo;
+          renderMap();
+        });
+      } else if (!S.map.leaflet) {
+        S.map.reliefImg = null;
+        S.map.reliefGeo = null;
       }
       el.mapPlaceholder.hidden = true;
       renderMap();
       updateMapCoords();
       if (S.map.minimapVisible) loadMapMinimap();
       if (!quiet) {
-        status(resp.demo
-          ? 'Внешние тайлы недоступны — показана демо-подложка. Кликните по руслу реки.'
-          : 'Карта обновлена. Кликните по руслу реки, чтобы поставить створ.');
+        status(S.map.leaflet
+          ? 'Подложка Leaflet загружена. Кликните по руслу, чтобы поставить створ.'
+          : (resp.demo
+            ? 'Внешние тайлы недоступны — показана демо-подложка. Кликните по руслу реки.'
+            : 'Карта обновлена. Кликните по руслу реки, чтобы поставить створ.'));
       }
     } catch (e) {
       status(e.message, true); toast(e.message);
@@ -767,11 +898,15 @@
     if (el.mapLon) el.mapLon.value = lo.toFixed(5);
   }
   function mapZoomBy(delta) {
-    if (!S.map.geo) { toast('Карта ещё загружается.'); return; }
+    if (!S.map.geo && !S.map.leaflet) { toast('Карта ещё загружается.'); return; }
     const z = clamp(S.map.zoom + delta, 2, 18);
     if (z === S.map.zoom) return;
-    S.map.zoom = z;
-    loadMapView(true);
+    if (S.map.leaflet) {
+      S.map.leaflet.setZoom(z);
+    } else {
+      S.map.zoom = z;
+      loadMapView(true);
+    }
     status(`Масштаб карты: z${z}.`);
   }
   function searchMapCoords() {
@@ -781,10 +916,8 @@
       toast('Введите координаты: широта −85…85, долгота −180…180.');
       return;
     }
-    S.map.lat = lat; S.map.lon = lon;
-    S.map.panDx = S.map.panDy = 0;
     // Поиск центра: створ НЕ ставим и гидрологию не запускаем.
-    loadMapView(true);
+    centerMapAt(lat, lon);
     status(`Карта центрирована: ${fmt(lat, 5)}° N, ${fmt(lon, 5)}° E. Створ не изменён.`);
   }
   async function loadMapMinimap() {
@@ -898,6 +1031,7 @@
         S.map.reliefImg = await loadImage(resp.relief);
       }
       S.map.overlayImg = resp.overlay ? await loadImage(resp.overlay) : null;
+      S.map.overlayGeo = S.map.overlayImg ? S.map.geo : null;
       showMapResult(resp);
       renderMap();
       status(`Водосбор построен: ${fmt(resp.map.area_km2, 2)} км², D = ${fmt(resp.result.D, 4)}.`);
@@ -952,8 +1086,13 @@
     if (name === 'map') {
       if (!S.mapTabLoaded) {
         S.mapTabLoaded = true;
-        setTimeout(() => loadMapView(true), 0);
-      } else setTimeout(renderMap, 0);
+        setTimeout(() => { initLeaflet(); loadMapView(true); }, 0);
+      } else {
+        setTimeout(() => {
+          if (S.map.leaflet) S.map.leaflet.invalidateSize();
+          renderMap();
+        }, 0);
+      }
     }
   }
 
@@ -1075,11 +1214,18 @@
     document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 
     // Карта
-    $('mapSource').addEventListener('change', (e) => { S.map.source = e.target.value; loadMapView(true); });
-    $('mapRelief').addEventListener('change', (e) => { S.map.relief = e.target.checked; loadMapView(true); });
+    $('mapSource').addEventListener('change', (e) => {
+      S.map.source = e.target.value;
+      if (S.map.leaflet) setLeafletLayer(0);
+      loadMapView(true);
+    });
+    $('mapRelief').addEventListener('change', (e) => {
+      S.map.relief = e.target.checked;
+      if (!S.map.relief) { S.map.reliefImg = null; S.map.reliefGeo = null; renderMap(); }
+      loadMapView(true);
+    });
     $('btnMapHome').addEventListener('click', () => {
-      S.map.lon = 30.33510; S.map.lat = 59.93428; S.map.zoom = 11;
-      updateMapCoords(); loadMapView(true);
+      centerMapAt(59.93428, 30.33510, 11);
       status('Центр карты — Санкт-Петербург. Створ не изменён.');
     });
     $('btnMapSearch').addEventListener('click', searchMapCoords);
@@ -1100,20 +1246,19 @@
       const sy = el.mapMinimapCanvas.height / mini.geo.h;
       const ll = lonLatFromTile(mini.geo.x0 + (px / sx) / 256,
         mini.geo.y0 + (py / sy) / 256, mini.geo.z);
-      S.map.lon = ll.lon; S.map.lat = ll.lat;
-      S.map.panDx = S.map.panDy = 0;
-      loadMapView(true);
+      centerMapAt(ll.lat, ll.lon);
       status('Карта перемещена по мини-карте. Створ не изменён.');
     });
 
     el.mapCanvas.addEventListener('pointerdown', (e) => {
-      if (!S.map.geo) return;
+      if (S.map.leaflet || !S.map.geo) return;
       const rect = el.mapCanvas.getBoundingClientRect();
       S.map.dragStart = { x: e.clientX, y: e.clientY, px: e.clientX - rect.left, py: e.clientY - rect.top };
       S.map.moved = false;
       el.mapCanvas.setPointerCapture(e.pointerId);
     });
     el.mapCanvas.addEventListener('pointermove', (e) => {
+      if (S.map.leaflet) return;
       const rect = el.mapCanvas.getBoundingClientRect();
       if (S.map.dragStart) {
         const dx = e.clientX - S.map.dragStart.x, dy = e.clientY - S.map.dragStart.y;
@@ -1128,6 +1273,7 @@
       }
     });
     el.mapCanvas.addEventListener('pointerup', (e) => {
+      if (S.map.leaflet) return;
       const st = S.map.dragStart;
       S.map.dragStart = null;
       if (!st || !S.map.geo) return;
@@ -1149,7 +1295,7 @@
       }
     });
     el.mapCanvas.addEventListener('wheel', (e) => {
-      if (!S.map.geo) return;
+      if (S.map.leaflet || !S.map.geo) return;
       e.preventDefault();
       const rect = el.mapCanvas.getBoundingClientRect();
       const g = mapGeoAt(e.clientX - rect.left, e.clientY - rect.top);
@@ -1449,7 +1595,7 @@ N(ε) на малых размерах ячеек и завышают D.
 (поле Scale), куда также записываются размер,
 разрешение 300 dpi, источник и дата.
 Если оставить пустым — будет «not set».`,
-    mapSource: 'Источник подложки: спутник Esri/OpenStreetMap или топокарта OpenTopoMap. При недоступности основного источника включаются резервные.',
+    mapSource: 'Подложка карты через Leaflet: спутник Esri/Google или топокарта OpenTopoMap. Leaflet сам переключает резервные источники при ошибках тайлов.',
     mapRelief: 'Показать отмывку рельефа по AWS Terrain Tiles. Она же используется для расчёта водосбора и главного русла.',
     mapLat: 'Широта центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.',
     mapLon: 'Долгота центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.'

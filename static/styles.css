@@ -168,6 +168,14 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .canvas-wrap.tool-pan.panning canvas { cursor: grabbing; }
 .canvas-wrap.tool-brush canvas, .canvas-wrap.tool-eraser canvas { cursor: crosshair; }
 .map-canvas-wrap canvas { cursor: crosshair; }
+.leaflet-host { position: absolute; inset: 0; z-index: 0; display: none; }
+.map-canvas-wrap.leaflet-mode .leaflet-host { display: block; }
+.map-canvas-wrap.leaflet-mode canvas { pointer-events: none; z-index: 1; }
+.map-canvas-wrap.leaflet-mode .minimap { z-index: 5; }
+.map-canvas-wrap.leaflet-mode .placeholder { z-index: 6; }
+.leaflet-container { background: var(--canvas); font-family: inherit; }
+.leaflet-control-attribution { font-size: 9px; background: rgba(255,248,243,.85) !important; color: var(--hint); }
+.leaflet-control-attribution a { color: var(--burgundy); }
 
 .placeholder {
   position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
