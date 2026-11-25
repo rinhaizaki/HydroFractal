@@ -10,7 +10,8 @@
     window.HF_STATIC = /github\.io$/i.test(location.hostname) || location.protocol === 'file:' ||
       /[?&]static=1/.test(location.search);
   </script>
-  <link rel="stylesheet" href="styles.css?v=4">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css?v=1">
+  <link rel="stylesheet" href="styles.css?v=5">
 </head>
 <body>
 <div class="app-shell">
@@ -249,6 +250,7 @@
       <div class="map-workspace">
         <div class="map-left">
           <div class="canvas-wrap map-canvas-wrap" id="mapWrap">
+            <div class="leaflet-host" id="leafletMap"></div>
             <canvas id="mapCanvas"></canvas>
             <div class="minimap" id="mapMinimapBox" hidden>
               <div class="minimap-title">Мини-карта — кликните, чтобы перейти</div>
@@ -309,7 +311,8 @@
 
 <div class="toast" id="toast" hidden></div>
 
-<script src="client-core.js?v=7"></script>
-<script src="app.js?v=9"></script>
+<script src="vendor/leaflet/leaflet.js?v=1"></script>
+<script src="client-core.js?v=8"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>
