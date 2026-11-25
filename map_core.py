@@ -81,6 +81,14 @@ UA = {"User-Agent": "Gidrofraktal/1.0 (river fractal analysis)"}
 # ---------------------------------------------------------------------------
 _CACHE_DIR = None
 _cache_lock = threading.Lock()
+# Необязательный поставщик локальной ЦМР (GeoTIFF, загруженный пользователем).
+_local_dem_provider = None
+
+
+def set_local_dem_provider(provider):
+    """provider(geo, dem_zoom, margin) -> (heights, dgeo) или None."""
+    global _local_dem_provider
+    _local_dem_provider = provider
 
 
 def set_cache_dir(path):
@@ -459,6 +467,11 @@ def fetch_dem_for_view(geo, dem_zoom, margin=1, use_cache=True, progress=None):
             tx, ty = tx0 + i, ty0 + j
             if 0 <= tx < max_n and 0 <= ty < max_n:
                 coords.append((i, j, tx, ty))
+
+    if _local_dem_provider is not None:
+        local = _local_dem_provider(geo, dem_zoom, margin)
+        if local is not None:
+            return local
 
     if progress:
         progress(f"Загрузка рельефа: тайлов {len(coords)}…")

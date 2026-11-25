@@ -272,6 +272,10 @@
           <option value="image">Только снимок</option>
           <option value="mask">Только маска</option>
         </select>
+        <label class="field-label" for="demFile">DEM GeoTIFF (EarthExplorer):</label>
+        <input type="file" id="demFile" accept=".tif,.tiff,image/tiff" multiple title="GeoTIFF с высотами SRTM/ASTER, скачанные с EarthExplorer">
+        <button class="btn small" id="btnDemClear" title="Убрать загруженный локальный DEM">🗑 DEM</button>
+        <span class="field-label" id="demLocalInfo">локальный DEM: нет</span>
         <button class="btn small" id="btnNdwi" title="Показать или скрыть слой NDWI по Sentinel-2">💧 NDWI</button>
         <button class="btn small" id="btnWaterSelect" title="Выделить водные объекты по порогу NDWI">🎯 Вода</button>
         <input type="range" id="ndwiThreshold" class="range short" min="-100" max="100" value="-25" step="1" title="Порог NDWI: −1,00 … +1,00">
@@ -401,7 +405,7 @@
 <div class="toast" id="toast" hidden></div>
 
 <script src="vendor/leaflet/leaflet.js?v=1"></script>
-<script src="client-core.js?v=15"></script>
-<script src="app.js?v=19"></script>
+<script src="client-core.js?v=16"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>

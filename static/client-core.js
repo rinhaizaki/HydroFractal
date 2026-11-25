@@ -145,6 +145,170 @@
       return { canvas, ctx, width: w, height: h, data: ctx.getImageData(0, 0, w, h) };
     });
   }
+  // --------------------------------------------------- локальный DEM GeoTIFF
+  const localDem = [];
+  HF.localDem = localDem;
+
+  async function inflateBytes(bytes) {
+    if (typeof DecompressionStream === 'undefined') {
+      throw new Error('Сжатый GeoTIFF не поддерживается этим браузером.');
+    }
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  async function parseGeoTiff(bytes, name) {
+    if (bytes.byteLength < 16) throw new Error('Файл слишком короткий для GeoTIFF.');
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const le = dv.getUint16(0, true) === 0x4949;
+    if (dv.getUint16(0, le) !== 0x4949 && dv.getUint16(0, le) !== 0x4d4d) {
+      throw new Error('Это не GeoTIFF.');
+    }
+    if (dv.getUint16(2, le) !== 42) throw new Error('Неизвестная версия TIFF.');
+    const sizes = {1:1, 2:1, 3:2, 4:4, 5:8, 6:1, 7:1, 8:2, 9:4, 10:8, 11:4, 12:8};
+    const readNum = (pos, type) => {
+      switch (type) {
+        case 1: case 2: case 6: case 7: return dv.getUint8(pos);
+        case 3: return dv.getUint16(pos, le);
+        case 8: return dv.getInt16(pos, le);
+        case 4: return dv.getUint32(pos, le);
+        case 9: return dv.getInt32(pos, le);
+        case 11: return dv.getFloat32(pos, le);
+        case 12: return dv.getFloat64(pos, le);
+        default: throw new Error('Неподдерживаемый тип TIFF: ' + type);
+      }
+    };
+    const entries = {};
+    const ifd = dv.getUint32(4, le);
+    const n = dv.getUint16(ifd, le);
+    for (let i = 0; i < n; i++) {
+      const pos = ifd + 2 + i * 12;
+      const tag = dv.getUint16(pos, le), type = dv.getUint16(pos + 2, le);
+      const count = dv.getUint32(pos + 4, le);
+      const size = sizes[type];
+      if (!size) continue;
+      entries[tag] = {type, count, pos, valueOffset: dv.getUint32(pos + 8, le), size};
+    }
+    const arr = (tag) => {
+      const e = entries[tag];
+      if (!e) return null;
+      const out = [];
+      const at = e.count * e.size <= 4 ? e.pos + 8 : e.valueOffset;
+      for (let i = 0; i < e.count; i++) {
+        if (e.type === 5 || e.type === 10) {
+          const num = readNum(at + i * 8, e.type);
+          const den = readNum(at + i * 8 + 4, e.type);
+          out.push(den ? num / den : NaN);
+        } else out.push(readNum(at + i * e.size, e.type));
+      }
+      return out;
+    };
+    const one = (tag, fallback) => {
+      const a = arr(tag);
+      return a && a.length ? a[0] : fallback;
+    };
+    const W = one(256, 0), H = one(257, 0);
+    if (!W || !H || W > 20000 || H > 20000) throw new Error('Некорректный размер растра DEM.');
+    const bits = one(258, 16), samples = one(277, 1);
+    const format = one(339, 1);
+    const ascii = (tag) => {
+      const e = entries[tag];
+      if (!e || e.type !== 2) return null;
+      const at = e.count * e.size <= 4 ? e.pos + 8 : e.valueOffset;
+      let out = '';
+      for (let i = 0; i < e.count; i++) out += String.fromCharCode(dv.getUint8(at + i));
+      return out;
+    };
+    if (samples !== 1 || (bits !== 16 && bits !== 32)) {
+      throw new Error('Нужен одноканальный DEM GeoTIFF с 16/32 битами на пиксель.');
+    }
+    const compression = one(259, 1);
+    if (compression !== 1 && compression !== 8 && compression !== 32946) {
+      throw new Error('Этот GeoTIFF сжат неподдерживаемым способом.');
+    }
+    const keys = arr(34735) || [];
+    for (let i = 0; i + 3 < keys.length; i += 4) {
+      if (keys[i] === 0 && keys[i + 1] === 1 && keys[i + 3] !== 4326) {
+        throw new Error('DEM должен быть в WGS84 (EPSG:4326), а не в проекции.');
+      }
+    }
+    const scale = arr(33550), tie = arr(33922), trans = arr(34264);
+    let lon0, lat0, dLon, dLat;
+    if (trans && trans.length >= 16) {
+      dLon = trans[0]; dLat = -trans[5];
+      lon0 = trans[3]; lat0 = trans[7];
+    } else if (scale && scale.length >= 2 && tie && tie.length >= 6) {
+      dLon = Math.abs(scale[0]); dLat = Math.abs(scale[1]);
+      lon0 = tie[3]; lat0 = tie[4];
+    } else {
+      throw new Error('В GeoTIFF нет привязки к координатам (ModelTiepoint/ModelTransformation).');
+    }
+    if (!(dLon > 0) || !(dLat > 0)) throw new Error('Некорректный масштаб пикселя DEM.');
+    const offsets = arr(273), counts = arr(279);
+    if (!offsets || !counts || !offsets.length) throw new Error('В GeoTIFF нет полос данных.');
+    const bytesPerPixel = bits / 8;
+    const out = new Uint8Array(W * H * bytesPerPixel);
+    let cursor = 0;
+    for (let i = 0; i < offsets.length; i++) {
+      let raw = bytes.subarray(offsets[i], offsets[i] + counts[i]);
+      if (compression === 8 || compression === 32946) raw = await inflateBytes(raw);
+      const take = Math.min(raw.length, out.length - cursor);
+      out.set(raw.subarray(0, take), cursor);
+      cursor += take;
+      if (cursor >= out.length) break;
+    }
+    if (cursor < out.length) throw new Error('GeoTIFF обрезан: не хватает данных.');
+    const view = new DataView(out.buffer);
+    const heights = new Float32Array(W * H);
+    const nodataText = ascii(42113);
+    const nodata = nodataText && Number.isFinite(Number(nodataText.trim()))
+      ? Number(nodataText.trim()) : -32768;
+    for (let i = 0; i < heights.length; i++) {
+      const q = i * bytesPerPixel;
+      const v = bytesPerPixel === 2
+        ? (format === 2 ? view.getInt16(q, le) : view.getUint16(q, le))
+        : (format === 3 ? view.getFloat32(q, le) : view.getInt32(q, le));
+      heights[i] = (!Number.isFinite(v) || Math.abs(v - nodata) < 1e-6) ? NaN : v;
+    }
+    return {name, W, H, lon0, lat0, dLon, dLat, heights};
+  }
+
+  function sampleLocalDem(geo, demZoom, margin) {
+    if (!localDem.length) return null;
+    const k = Math.pow(2, demZoom - geo.z);
+    const tx0 = Math.floor(geo.x0 * k - margin), ty0 = Math.floor(geo.y0 * k - margin);
+    const tx1 = Math.floor((geo.x0 + geo.w / TILE) * k + margin);
+    const ty1 = Math.floor((geo.y0 + geo.h / TILE) * k + margin);
+    const W = Math.max(1, (tx1 - tx0 + 1) * TILE), H = Math.max(1, (ty1 - ty0 + 1) * TILE);
+    const dem = new Float32Array(W * H); dem.fill(NaN);
+    const n = Math.pow(2, demZoom);
+    const values = [];
+    let finite = 0;
+    for (let y = 0; y < H; y++) {
+      const gy = ty0 + (y + 0.5) / TILE;
+      const lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * gy / n))) * 180 / Math.PI;
+      for (let x = 0; x < W; x++) {
+        const lon = (tx0 + (x + 0.5) / TILE) / n * 360 - 180;
+        for (let t = 0; t < localDem.length; t++) {
+          const tile = localDem[t];
+          const col = Math.floor((lon - tile.lon0) / tile.dLon);
+          const row = Math.floor((tile.lat0 - lat) / tile.dLat);
+          if (col < 0 || row < 0 || col >= tile.W || row >= tile.H) continue;
+          const h = tile.heights[row * tile.W + col];
+          if (Number.isFinite(h)) { dem[y * W + x] = h; finite++; values.push(h); break; }
+        }
+      }
+    }
+    if (finite < W * H * 0.5) return null;
+    if (finite < dem.length) {
+      values.sort((a, b) => a - b);
+      const med = values[values.length >> 1];
+      for (let i = 0; i < dem.length; i++) if (!Number.isFinite(dem[i])) dem[i] = med;
+    }
+    return {dem, W, H, source: 'local-geotiff',
+            dgeo: {x0: tx0, y0: ty0, z: demZoom, w: W, h: H}};
+  }
+
   function median(values) {
     values.sort((a, b) => a - b);
     return values[values.length >> 1];
@@ -695,6 +859,8 @@
       }
       return { tx, ty, heights, source };
     };
+    const local = sampleLocalDem(geo, demZoom, margin);
+    if (local) return Promise.resolve(local);
     const jobs = tiles.map(([tx, ty]) => {
       const terrainUrl = TERRARIUM_URL.replace('{z}', demZoom).replace('{x}', tx).replace('{y}', ty);
       return fetchImageCors(nasaDemUrl(demZoom, tx, ty))
@@ -817,11 +983,13 @@
         .map(Number)[0];
       const creditBase = (TILE_CREDITS[source] || [SOURCES[source].credit])[mainSource]
         || SOURCES[source].credit;
-      const answer = (relief) => ({
+      const answer = (relief, localUsed) => ({
         ok: true,
         image: safe.toDataURL('image/jpeg', 0.88),
         tiles, relief: relief ? relief.toDataURL('image/png') : null,
-        credit: creditBase + ' · ' + TERRAIN_CREDIT + (demo ? ' (демо-карта)' : ''),
+        credit: creditBase + ' · ' + TERRAIN_CREDIT +
+          (localUsed ? ' · локальный DEM GeoTIFF (EarthExplorer)' : '') +
+          (demo ? ' (демо-карта)' : ''),
         demo, source_used: mainSource,
         cell_m: Math.round(resolutionM(lat, z) * 100) / 100, geo
       });
@@ -829,7 +997,8 @@
       const dz = Math.min(z, 12);
       return loadTerrain(geo, dz, 0).then((real) => {
         const info = real || syntheticDem(geo, Math.min(z, 10), 0);
-        return answer(hillshadeOverlay(info, geo, W, H));
+        return answer(hillshadeOverlay(info, geo, W, H),
+          !!(real && real.source === 'local-geotiff'));
       });
     });
   }
@@ -1132,7 +1301,10 @@
           ok: true, image, overlay, mask, width: W, height: H,
           tiles: viewResult.tiles, relief: viewResult.relief,
           demo: !!viewResult.demo,
-          credit: viewResult.credit,
+          credit: viewResult.credit.replace(
+            ' · ' + TERRAIN_CREDIT,
+            ' · ' + TERRAIN_CREDIT +
+              (demInfo.source === 'local-geotiff' ? ' · локальный DEM GeoTIFF (EarthExplorer)' : '')),
           map: {
             area_km2: Math.round(catchResult.count * cell * cell / 1e6 * 1000) / 1000,
             channel_km: Math.round(ch.count * cell / 1000 * 1000) / 1000,
@@ -1641,6 +1813,21 @@
           r.water_pixels = mask.reduce((a, b) => a + b, 0);
           return { ok: true, result: cleanResult(r, object) };
         });
+      case '/api/dem/upload':
+        return Promise.all((p.files || []).map((f) =>
+          parseGeoTiff(dataUrlToBytes(f.data), f.name || 'dem.tif')
+            .then((tile) => { localDem.push(tile); return tile; })))
+          .then((tiles) => ({
+            ok: true,
+            tiles: tiles.map((t) => ({
+              name: t.name, width: t.W, height: t.H,
+              west: t.lon0, north: t.lat0,
+              east: t.lon0 + t.dLon * t.W, south: t.lat0 - t.dLat * t.H
+            }))
+          }));
+      case '/api/dem/clear':
+        localDem.length = 0;
+        return Promise.resolve({ok: true});
       case '/api/map/view':
         return mapView(p);
       case '/api/map/analyze':
