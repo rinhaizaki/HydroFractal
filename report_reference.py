@@ -191,7 +191,7 @@ def write_report(self, path):
         return Paragraph(text if markup else escape(text), caption_fig)
 
     def table(data, widths, header=True, center=False, keep_whole=False,
-              markup=False, font_size=12, bold_first_col=False):
+              markup=False, font_size=12, bold_first_col=False, pad=3):
         """center=True — все ячейки по центру;
         keep_whole=True — таблица не разрывается между страницами;
         markup=True — в ячейках разрешена разметка (<sub>, <super>)."""
@@ -232,8 +232,8 @@ def write_report(self, path):
             ("LEADING", (0, 0), (-1, -1), font_size * 1.25),
             ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), pad),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), pad),
             ("LEFTPADDING", (0, 0), (-1, -1), 6),
             ("RIGHTPADDING", (0, 0), (-1, -1), 6),
         ]
@@ -632,12 +632,17 @@ def write_report(self, path):
         "N ~ (", sq_frac("1", "ε", 13), ")<super>h</super>"
     ]))
     story.append(Paragraph(
-        "где ε — сторона ячейки сетки, N(ε) — число ячеек, по которым "
-        "проходит линия реки.", body))
+        "где ε — сторона ячейки сетки (в пикселях); N(ε) — число ячеек, "
+        "через которые проходит линия реки; h — показатель степени "
+        "(размерность блуждания), равный наклону прямой в логарифмических "
+        "координатах.", note))
     story.append(formula_no([
         "h = 2(D − 1),&nbsp;&nbsp;&nbsp; D = 1 + ",
         sq_frac("h", "2", 13),
     ]))
+    story.append(Paragraph(
+        "где h — размерность блуждания (наклон аппроксимирующей прямой); "
+        "D — фрактальная размерность линии реки; 1 — размерность точки.", note))
     story.append(Paragraph(
         "Наклон прямой в координатах «log<sub>10</sub> N(ε) — "
         "log<sub>10</sub> (1/ε)» оценивается методом наименьших "
@@ -662,8 +667,12 @@ def write_report(self, path):
         ["Пикселей воды",
          f"{int(self.mask.sum())} ({ru(frac, 2)} % кадра)"],
         ["Маска", touch_txt],
-    ], [7.2 * cm, 9.1 * cm])
+    ], [7.2 * cm, 9.1 * cm], pad=1.5)
     story.append(t1)
+    story.append(Paragraph(
+        "Пояснение: файл — имя снимка; створ — точка, выше которой "
+        "измеряется русло; допуск — порог HSV-расстояния; объект — что "
+        "обмеряется сеткой; пиксели воды — площадь маски.", note))
 
     # ---------------- II. результаты измерения D ----------------
     story.append(PageBreak())       # глава 2 — с новой страницы
@@ -679,7 +688,7 @@ def write_report(self, path):
         ["Коэффициент корреляции (r = √R²)", f"r = {ru(corr, 10)}"],
     ], [7.6 * cm, 8.7 * cm]))
     story.append(Paragraph(
-        "R² = 1,0 соответствует идеальной прямой в логарифмических "
+        "Пояснение: R² = 1,0 соответствует идеальной прямой в логарифмических "
         "координатах; погрешность D получена из ошибки наклона h "
         "(метод наименьших квадратов).", note))
 
@@ -705,7 +714,7 @@ def write_report(self, path):
         _leg1.get_frame().set_edgecolor(PALETTE["brown"])
         fig1.tight_layout()
         buf1 = _io.BytesIO()
-        fig1.savefig(buf1, format="png")
+        fig1.savefig(buf1, format="png", facecolor="white")
         buf1.seek(0)
         story.append(Spacer(1, 6))
         # рисунок 1 — на всю ширину полосы набора
@@ -832,15 +841,16 @@ def write_report(self, path):
     def err_item(header, formula_parts, expl):
         return KeepTogether([Paragraph(header, body_noind),
                              formula_no(formula_parts),
-                             Paragraph(expl, body)])
+                             Paragraph(expl, note)])
 
     story.append(Paragraph("а) абсолютные погрешности", body_noind))
     story.append(err_item(
         "• для среднего значения",
         ["ε<sub>Q</sub> = ",
          sq_frac("σ<sub>Q</sub>", "n<super>1/2</super>", 13)],
-        "где σ<sub>Q</sub> — среднеквадратическое отклонение расхода "
-        "воды, м³/с; n — число членов ряда наблюдений."))
+        "где ε<sub>Q</sub> — абсолютная погрешность среднего расхода; "
+        "σ<sub>Q</sub> — среднеквадратическое отклонение расхода воды, м³/с; "
+        "n — число членов ряда наблюдений."))
 
     story.append(err_item(
         "• для коэффициента вариации",
@@ -848,8 +858,9 @@ def write_report(self, path):
          sq_frac("C<sub>v</sub>", "n + 4C<sub>v</sub>²", 13),
          "&nbsp;",
          *root(sq_frac("n(1 + C<sub>v</sub>²)", "2", 13))],
-        "где C<sub>v</sub> — коэффициент вариации; n — число членов "
-        "ряда наблюдений."))
+        "где ε<sub>Cv</sub> — абсолютная погрешность коэффициента вариации; "
+        "C<sub>v</sub> — коэффициент вариации; n — число членов ряда "
+        "наблюдений."))
 
     story.append(err_item(
         "• для коэффициента асимметрии",
@@ -857,8 +868,9 @@ def write_report(self, path):
          *root(sq_frac("6", "n", 13)),
          "(1 + 6C<sub>v</sub>² + 5C<sub>v</sub><super>4</super>)"
          "<super>1/2</super>"],
-        "где C<sub>v</sub> — коэффициент вариации; n — число членов "
-        "ряда наблюдений."))
+        "где ε<sub>Cs</sub> — абсолютная погрешность коэффициента асимметрии; "
+        "C<sub>v</sub> — коэффициент вариации; n — число членов ряда "
+        "наблюдений."))
 
     story.append(Paragraph("б) относительные погрешности", body_noind))
     story.append(err_item(
@@ -866,8 +878,9 @@ def write_report(self, path):
         ["ε<sub>Q, %</sub> = ",
          sq_frac("C<sub>v</sub>", "n<super>1/2</super>", 13),
          "·100 %"],
-        "где C<sub>v</sub> — коэффициент вариации; n — число членов "
-        "ряда наблюдений."))
+        "где ε<sub>Q, %</sub> — относительная погрешность среднего расхода, %; "
+        "C<sub>v</sub> — коэффициент вариации; n — число членов ряда "
+        "наблюдений."))
 
     story.append(err_item(
         "• для коэффициента вариации",
@@ -876,8 +889,9 @@ def write_report(self, path):
          "&nbsp;",
          *root(sq_frac("n(1 + C<sub>v</sub>²)", "2", 13)),
          "·100 %"],
-        "где C<sub>v</sub> — коэффициент вариации; n — число членов "
-        "ряда наблюдений."))
+        "где ε<sub>Cv, %</sub> — относительная погрешность коэффициента "
+        "вариации, %; C<sub>v</sub> — коэффициент вариации; n — число "
+        "членов ряда наблюдений."))
 
     story.append(err_item(
         "• для коэффициента асимметрии",
@@ -886,8 +900,9 @@ def write_report(self, path):
          *root(sq_frac("6", "n", 13)),
          "(1 + 6C<sub>v</sub>² + 5C<sub>v</sub><super>4</super>)"
          "<super>1/2</super>·100 %"],
-        "где C<sub>v</sub> и C<sub>s</sub> — коэффициенты вариации и "
-        "асимметрии; n — число членов ряда наблюдений."))
+        "где ε<sub>Cs, %</sub> — относительная погрешность коэффициента "
+        "асимметрии, %; C<sub>s</sub> — коэффициент асимметрии; C<sub>v</sub> "
+        "— коэффициент вариации; n — число членов ряда наблюдений."))
 
     # ---------------- VI. теоретическая кривая обеспеченности ----------------
     kp_by_p = stats["kp_by_p"]
@@ -929,6 +944,11 @@ def write_report(self, path):
     story.append(table(t5_rows, [5.4 * cm, 5.4 * cm, 5.4 * cm],
                        header=True, center=True, keep_whole=True,
                        markup=True))
+    story.append(Paragraph(
+        "Пояснение: P — обеспеченность (вероятность превышения), %; "
+        "K<sub>P</sub> — модульный коэффициент; Q<sub>P</sub> = "
+        "K<sub>P</sub>·Q<sub>ср</sub> — расход воды заданной обеспеченности, "
+        "м³/с. Строки соответствуют основным значениям P рисунка 4.", note))
 
     story.append(PageBreak())      # пояснения — на отдельной странице
     story.append(sect("Порядок вычисления", level=2))
@@ -941,20 +961,25 @@ def write_report(self, path):
         "Q<sub>ср</sub> = K<sub>P</sub>·Q<sub>ср</sub>",
     ]))
     story.append(Paragraph(
-        "где Φ<sub>P</sub> — коэффициент Фостера–Рыбкина, зависящий от "
-        "обеспеченности P и коэффициента асимметрии C<sub>s</sub>",
-        body))
+        "где Q<sub>P</sub> — расход воды обеспеченности P, м³/с; Φ<sub>P</sub> "
+        "— коэффициент Фостера–Рыбкина; C<sub>v</sub> — коэффициент вариации; "
+        "Q<sub>ср</sub> — средний многолетний расход; K<sub>P</sub> — модульный "
+        "коэффициент.", note))
     story.append(formula_no([
         "Φ<sub>P</sub> = z<sub>P</sub> + (C<sub>s</sub>/6)·"
         "(z<sub>P</sub>² − 1)",
     ]))
     story.append(Paragraph(
-        "а K<sub>P</sub> — модульный коэффициент, показывающий, во "
-        "сколько раз расход обеспеченности P отличается от Q<sub>ср</sub>",
-        body))
+        "где Φ<sub>P</sub> — коэффициент Фостера–Рыбкина; z<sub>P</sub> — "
+        "квантиль стандартного нормального распределения для обеспеченности "
+        "P; C<sub>s</sub> — коэффициент асимметрии.", note))
     story.append(formula_no([
         "K<sub>P</sub> = Φ<sub>P</sub>·C<sub>v</sub> + 1",
     ]))
+    story.append(Paragraph(
+        "где K<sub>P</sub> — модульный коэффициент, показывающий, во сколько "
+        "раз расход обеспеченности P отличается от Q<sub>ср</sub>; Φ<sub>P</sub> "
+        "— коэффициент Фостера–Рыбкина; C<sub>v</sub> — коэффициент вариации.", note))
     story.append(Paragraph(
         f"В формулах ({p_no[0] - 1}) и ({p_no[0]}) z<sub>P</sub> — квантиль "
         "стандартного нормального распределения для обеспеченности P; "

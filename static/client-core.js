@@ -336,8 +336,8 @@
   function makePlot(result) {
     const { canvas, ctx } = canvasContext(720, 380);
     const W = canvas.width, H = canvas.height;
-    ctx.fillStyle = '#F3EBE0'; ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = '#FBF7F0'; ctx.fillRect(48, 18, W - 66, H - 68);
+    ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#FFFFFF'; ctx.fillRect(48, 18, W - 66, H - 68);
     const rows = result.fit_rows;
     const xs = rows.map((r) => Math.log10(1 / r[1]));
     const ys = rows.map((r) => Math.log10(r[2]));
@@ -346,13 +346,13 @@
     const y0 = Math.min.apply(null, ys) - 0.08, y1 = Math.max.apply(null, ys) + 0.08;
     const px = (x) => 48 + (x - x0) / (x1 - x0) * (W - 66);
     const py = (y) => 18 + (H - 68) - (y - y0) / (y1 - y0) * (H - 68);
-    ctx.strokeStyle = '#DACAB0'; ctx.lineWidth = 1;
+    ctx.strokeStyle = '#DDDDDD'; ctx.lineWidth = 1;
     for (let i = 0; i <= 6; i++) {
       const x = 48 + i * (W - 66) / 6, y = 18 + i * (H - 68) / 6;
       ctx.beginPath(); ctx.moveTo(x, 18); ctx.lineTo(x, H - 50); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(48, y); ctx.lineTo(W - 18, y); ctx.stroke();
     }
-    ctx.fillStyle = '#4d3524'; ctx.font = '12px Segoe UI, sans-serif';
+    ctx.fillStyle = '#333333'; ctx.font = '12px "Times New Roman", Times, serif';
     ctx.fillText('log₁₀(1/ε)', W / 2 - 34, H - 16);
     ctx.save(); ctx.translate(14, H / 2 + 40); ctx.rotate(-Math.PI / 2);
     ctx.fillText('log₁₀ N(ε)', 0, 0); ctx.restore();
@@ -364,7 +364,7 @@
       ctx.fillStyle = '#9CA75A'; ctx.fill();
       ctx.strokeStyle = '#8B6431'; ctx.lineWidth = 0.8; ctx.stroke();
     });
-    ctx.fillStyle = '#733933'; ctx.font = 'bold 13px Segoe UI, sans-serif';
+    ctx.fillStyle = '#733933'; ctx.font = 'bold 13px "Times New Roman", Times, serif';
     ctx.fillText('Канторовский метод: log N(ε) от log(1/ε)', 58, 12);
     return canvas.toDataURL('image/png');
   }
@@ -1154,12 +1154,17 @@
           «${escapeHtml(payload.source_name || fromParams('Источник', '—'))}». Измерение выполнено методом Кантора (квадраты);
           связь размерности блуждания h с фрактальной размерностью D задаётся формулой:</p>
           <p class="formula">N ~ (1/ε)<sup>h</sup> <span class="num">(1)</span></p>
-          <p>где ε — сторона ячейки сетки, N(ε) — число ячеек, по которым проходит линия реки.</p>
+          <p class="note">где ε — сторона ячейки сетки, px; N(ε) — число ячеек, через которые проходит
+          линия реки; h — показатель степени (размерность блуждания), равный наклону прямой.</p>
           <p class="formula">h = 2(D − 1), &nbsp;&nbsp; D = 1 + h/2 <span class="num">(2)</span></p>
+          <p class="note">где h — размерность блуждания (наклон прямой); D — фрактальная размерность
+          линии реки; 1 — размерность точки.</p>
           <p>Наклон прямой в координатах «log<sub>10</sub> N(ε) — log<sub>10</sub> (1/ε)» оценивается
           методом наименьших квадратов по всем делениям сетки от 1 до максимального.</p>
           <h2>I. Исходные данные и параметры расчёта</h2>
           ${tbl('Таблица 1 — Параметры расчёта', ['Параметр', 'Значение'], table1, 't1')}
+          <p class="note">Пояснение: файл — имя снимка; створ — точка, выше которой измеряется русло;
+          допуск — порог HSV-расстояния; объект — что обмеряется сеткой; пиксели воды — площадь маски.</p>
         </div>
         <div class="page">
           <h2>II. Результаты измерения фрактальной размерности</h2>
@@ -1169,7 +1174,7 @@
             ['R² (коэффициент детерминации)', `R² = ${ru(r2, 10)}`],
             ['Коэффициент корреляции (r = √R²)', `r = ${ru(corr, 10)}`]
           ])}
-          <p class="note">R² = 1,0 соответствует идеальной прямой в логарифмических координатах;
+          <p class="note">Пояснение: R² = 1,0 соответствует идеальной прямой в логарифмических координатах;
           погрешность D получена из ошибки наклона h (метод наименьших квадратов).</p>
           ${img(payload.plot || r.plot, 'Рисунок 1 — Зависимость log<sub>10</sub> N(ε) от log<sub>10</sub> (1/ε)')}
           <p class="noind" style="text-align:center;text-indent:0">h = ${ru(r.h, 4)}, &nbsp; D = ${ru(r.D, 4)}, &nbsp; R² = ${ru(r2, 10)}</p>
@@ -1196,16 +1201,36 @@
           определённые по фрактальной размерности.</p>
           ${tbl('Таблица 4 — Статистические характеристики стока',
             ['Характеристика', 'Обозначение', 'Значение', 'Относительная погрешность', 'Абсолютная погрешность'], rows4, 't4')}
-          <p class="note">Характеристики определены по фрактальной размерности D (калибровочная связь);
-          относительная погрешность указана в долях процента.</p>
+          <p class="note">Пояснение: Qср — средний многолетний расход воды (норма стока), м³/с;
+          Cv — коэффициент вариации; Cs — коэффициент асимметрии. Характеристики определены по
+          фрактальной размерности D (калибровочная связь); относительная погрешность указана в
+          долях процента, абсолютная — в единицах измерения характеристики.</p>
           <p class="noind">а) абсолютные погрешности</p>
-          <p>• для среднего значения: ε<sub>Q</sub> = σ<sub>Q</sub> / n<sup>1/2</sup> <span class="num">(3)</span></p>
-          <p>• для коэффициента вариации: ε<sub>Cv</sub> = Cv / n · ((n + 4Cv²) / (2(1 + Cv²)))<sup>1/2</sup> <span class="num">(4)</span></p>
-          <p>• для коэффициента асимметрии: ε<sub>Cs</sub> = (6/n)<sup>1/2</sup>(1 + 6Cv² + 5Cv<sup>4</sup>)<sup>1/2</sup> <span class="num">(5)</span></p>
+          <p class="noind">• для среднего значения</p>
+          <p class="formula">ε<sub>Q</sub> = σ<sub>Q</sub> / n<sup>1/2</sup> <span class="num">(3)</span></p>
+          <p class="note">где ε<sub>Q</sub> — абсолютная погрешность среднего расхода; σ<sub>Q</sub> —
+          среднеквадратическое отклонение расхода воды, м³/с; n — число членов ряда наблюдений.</p>
+          <p class="noind">• для коэффициента вариации</p>
+          <p class="formula">ε<sub>Cv</sub> = Cv / n · ((n + 4Cv²) / (2(1 + Cv²)))<sup>1/2</sup> <span class="num">(4)</span></p>
+          <p class="note">где ε<sub>Cv</sub> — абсолютная погрешность коэффициента вариации; Cv —
+          коэффициент вариации; n — число членов ряда наблюдений.</p>
+          <p class="noind">• для коэффициента асимметрии</p>
+          <p class="formula">ε<sub>Cs</sub> = (6/n)<sup>1/2</sup>(1 + 6Cv² + 5Cv<sup>4</sup>)<sup>1/2</sup> <span class="num">(5)</span></p>
+          <p class="note">где ε<sub>Cs</sub> — абсолютная погрешность коэффициента асимметрии; Cv —
+          коэффициент вариации; n — число членов ряда наблюдений.</p>
           <p class="noind">б) относительные погрешности</p>
-          <p>• ε<sub>Q, %</sub> = Cv / n<sup>1/2</sup> · 100 % <span class="num">(6)</span></p>
-          <p>• ε<sub>Cv, %</sub> = 1/n · ((n + 4Cv²) / (2(1 + Cv²)))<sup>1/2</sup> · 100 % <span class="num">(7)</span></p>
-          <p>• ε<sub>Cs, %</sub> = (1/Cs)(6/n)<sup>1/2</sup>(1 + 6Cv² + 5Cv<sup>4</sup>)<sup>1/2</sup> · 100 % <span class="num">(8)</span></p>
+          <p class="noind">• для среднего значения</p>
+          <p class="formula">ε<sub>Q, %</sub> = Cv / n<sup>1/2</sup> · 100 % <span class="num">(6)</span></p>
+          <p class="note">где ε<sub>Q, %</sub> — относительная погрешность среднего расхода, %; Cv —
+          коэффициент вариации; n — число членов ряда наблюдений.</p>
+          <p class="noind">• для коэффициента вариации</p>
+          <p class="formula">ε<sub>Cv, %</sub> = 1/n · ((n + 4Cv²) / (2(1 + Cv²)))<sup>1/2</sup> · 100 % <span class="num">(7)</span></p>
+          <p class="note">где ε<sub>Cv, %</sub> — относительная погрешность коэффициента вариации, %;
+          Cv — коэффициент вариации; n — число членов ряда наблюдений.</p>
+          <p class="noind">• для коэффициента асимметрии</p>
+          <p class="formula">ε<sub>Cs, %</sub> = (1/Cs)(6/n)<sup>1/2</sup>(1 + 6Cv² + 5Cv<sup>4</sup>)<sup>1/2</sup> · 100 % <span class="num">(8)</span></p>
+          <p class="note">где ε<sub>Cs, %</sub> — относительная погрешность коэффициента асимметрии, %;
+          Cs — коэффициент асимметрии; Cv — коэффициент вариации; n — число членов ряда.</p>
         </div>
         <div class="page wide">
           <h2>VI. Теоретическая кривая обеспеченности (Пирсона III типа)</h2>
@@ -1219,20 +1244,29 @@
           коэффициенты K<sub>P</sub> и соответствующие расходы воды Q<sub>P</sub>.</p>
           ${tbl('Таблица 5 — Ординаты теоретической кривой',
             ['Обеспеченность P, %', 'Модульный коэффициент K<sub>P</sub>', 'Расход воды Q<sub>P</sub>, м³/с'], rows5)}
+          <p class="note">Пояснение: P — обеспеченность (вероятность превышения), %; K<sub>P</sub> —
+          модульный коэффициент; Q<sub>P</sub> = K<sub>P</sub>·Q<sub>ср</sub> — расход воды заданной
+          обеспеченности, м³/с. Строки соответствуют рисунку 4.</p>
         </div>
         <div class="page">
           <h2>Порядок вычисления</h2>
           <p>Теоретическая кривая строится по трём характеристикам стока — Q<sub>ср</sub>, C<sub>v</sub> и C<sub>s</sub>.
           Расход воды обеспеченности P вычисляется по формуле</p>
           <p class="formula">Q<sub>P</sub> = (Φ<sub>P</sub>·C<sub>v</sub> + 1)·Q<sub>ср</sub> = K<sub>P</sub>·Q<sub>ср</sub> <span class="num">(9)</span></p>
-          <p>где Φ<sub>P</sub> — коэффициент Фостера–Рыбкина, зависящий от обеспеченности P и коэффициента асимметрии C<sub>s</sub></p>
+          <p class="note">где Q<sub>P</sub> — расход воды обеспеченности P, м³/с; Φ<sub>P</sub> — коэффициент
+          Фостера–Рыбкина; C<sub>v</sub> — коэффициент вариации; Q<sub>ср</sub> — средний многолетний
+          расход; K<sub>P</sub> — модульный коэффициент.</p>
           <p class="formula">Φ<sub>P</sub> = z<sub>P</sub> + (C<sub>s</sub>/6)·(z<sub>P</sub>² − 1) <span class="num">(10)</span></p>
-          <p>а K<sub>P</sub> — модульный коэффициент, показывающий, во сколько раз расход обеспеченности P
-          отличается от Q<sub>ср</sub></p>
+          <p class="note">где Φ<sub>P</sub> — коэффициент Фостера–Рыбкина; z<sub>P</sub> — квантиль
+          стандартного нормального распределения для обеспеченности P; C<sub>s</sub> — коэффициент
+          асимметрии.</p>
           <p class="formula">K<sub>P</sub> = Φ<sub>P</sub>·C<sub>v</sub> + 1 <span class="num">(11)</span></p>
-          <p>В формулах (10) и (11) z<sub>P</sub> — квантиль стандартного нормального распределения
-          для обеспеченности P; значения Φ<sub>P</sub> определяются по стандартным таблицам
-          (например, СП 33-101-2003).</p>
+          <p class="note">где K<sub>P</sub> — модульный коэффициент, показывающий, во сколько раз расход
+          обеспеченности P отличается от Q<sub>ср</sub>; Φ<sub>P</sub> — коэффициент Фостера–Рыбкина;
+          C<sub>v</sub> — коэффициент вариации.</p>
+          <p class="note">В формулах (10) и (11) z<sub>P</sub> — квантиль стандартного нормального
+          распределения для обеспеченности P; значения Φ<sub>P</sub> определяются по стандартным
+          таблицам (например, СП 33-101-2003).</p>
         </div>
         </body></html>`);
       win.document.close();
