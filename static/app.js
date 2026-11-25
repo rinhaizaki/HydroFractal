@@ -1752,6 +1752,12 @@
         result: r, table: r.table || [], stream: r.stream || {},
         plot: r.plot,
         image: await captureMapForReport() || S.map.reportImage || (S.map.img ? S.map.img.src : null),
+        geo: {
+          center: { lat: S.map.lat, lon: S.map.lon },
+          outlet: S.map.outlet ? { lat: S.map.outlet.lat, lon: S.map.outlet.lon } : null,
+          zoom: S.map.zoom,
+          m_per_px: 156543.03392 * Math.cos(S.map.lat * Math.PI / 180) / Math.pow(2, S.map.zoom)
+        },
         marks: S.map.marks.map((m) => ({ lat: m.lat, lon: m.lon, label: m.label }))
       }, 'gidrofraktal-map-report.pdf');
       status('PDF-отчёт по карте сохранён.');
