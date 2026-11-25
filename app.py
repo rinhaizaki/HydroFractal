@@ -25,11 +25,37 @@ import numpy as np
 from flask import Flask, jsonify, request, send_file
 from PIL import Image, ImageDraw
 
-from core import hydro_core, map_core
+from core import hydro_core, map_core, offline_map
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TILE_CACHE = os.path.join(BASE_DIR, "tile_cache")
 map_core.set_cache_dir(TILE_CACHE)
+
+# В изолированном окружении (без доступа к тайлам) сервер показывает
+# детерминированную демо-местность — все алгоритмы при этом работают на
+# настоящем массиве высот, просто он сгенерирован локально.
+_orig_best_dem_zoom = map_core.best_dem_zoom
+_orig_fetch_dem = map_core.fetch_dem_for_view
+
+
+def _best_dem_zoom(view_zoom, lat):
+    zoom = _orig_best_dem_zoom(view_zoom, lat)
+    if not offline_map.ensure_mode():
+        # меньше тайлов → быстрее используется демо-рельеф
+        return min(zoom, 10)
+    return zoom
+
+
+def _fetch_dem_with_fallback(geo, dem_zoom, margin=1, use_cache=True, progress=None):
+    dem, dgeo = _orig_fetch_dem(geo, dem_zoom, margin=margin,
+                                use_cache=use_cache, progress=progress)
+    if dem is None:
+        return offline_map.synthetic_dem_for_view(geo, dem_zoom, margin, progress)
+    return dem, dgeo
+
+
+map_core.best_dem_zoom = _best_dem_zoom
+map_core.fetch_dem_for_view = _fetch_dem_with_fallback
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = 40 * 1024 * 1024
@@ -364,6 +390,23 @@ def index():
     return app.send_static_file("index.html")
 
 
+# Относительные пути в разметке одинаково работают и на Flask, и на GitHub Pages
+# (где каталог static/ становится корнем сайта).
+@app.route("/styles.css")
+def styles_alias():
+    return app.send_static_file("styles.css")
+
+
+@app.route("/app.js")
+def app_js_alias():
+    return app.send_static_file("app.js")
+
+
+@app.route("/client-core.js")
+def client_core_alias():
+    return app.send_static_file("client-core.js")
+
+
 @app.route("/api/health")
 def health():
     return jsonify({"ok": True, "service": "HydroFractal Web"})
@@ -497,7 +540,17 @@ def _map_params(data):
 
 
 def _render_map(lon, lat, zoom, width, height, source, relief=False):
-    img, geo = map_core.render_view(lon, lat, zoom, width, height, source=source)
+    if offline_map.ensure_mode():
+        img, geo = map_core.render_view(lon, lat, zoom, width, height, source=source)
+    else:
+        # Без сети сразу строим согласованную с рельефом подложку.
+        img = offline_map.synthetic_base_image(
+            {"w": width, "h": height}, source=source)
+        cx, cy = map_core.lonlat_to_tile(lon, lat, zoom)
+        geo = {"x0": cx - width / (2.0 * map_core.TILE),
+               "y0": cy - height / (2.0 * map_core.TILE),
+               "z": zoom, "w": width, "h": height,
+               "center_lon": lon, "center_lat": lat}
     if relief:
         try:
             dz = map_core.best_dem_zoom(zoom, lat)
@@ -520,6 +573,7 @@ def api_map_view():
             "ok": True,
             "image": _encode_jpeg(img),
             "credit": f"{map_core.SOURCES[source]['credit']} · {map_core.TERRAIN_CREDIT}",
+            "demo": not offline_map.ensure_mode(),
             "cell_m": round(map_core.resolution_m(lat, zoom), 2),
             "geo": {"x0": geo["x0"], "y0": geo["y0"], "z": geo["z"],
                     "w": geo["w"], "h": geo["h"]},
@@ -565,6 +619,7 @@ def api_map_analyze():
             "image": _encode_png(overlay.convert("RGB")),
             "credit": (f"{map_core.SOURCES[source]['credit']} · "
                        f"{map_core.TERRAIN_CREDIT}"),
+            "demo": not offline_map.ensure_mode(),
             "map": {
                 "area_km2": round(st["area_km2"], 3),
                 "channel_km": round(st["channel_km"], 3),

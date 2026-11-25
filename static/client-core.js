@@ -1,0 +1,1075 @@
+/* HydroFractal — клиентское вычислительное ядро для GitHub Pages.
+   Повторяет алгоритмы app.py / core без сервера: сегментация, Кантор,
+   PNG-маска с метаданными, D8-гидрология, тайлы и отчёт через печать PDF. */
+(function () {
+  'use strict';
+
+  const HF = {};
+  const TILE = 256;
+  const MAX_LAT = 85.05112878;
+  const MAJOR_P = [0.1, 0.5, 1, 2, 5, 10, 20, 30, 40, 50,
+    60, 70, 80, 90, 95, 98, 99, 99.5, 99.9];
+  const D8 = [[-1, 0, 1], [1, 0, 4], [0, -1, 16], [0, 1, 1],
+    [-1, -1, 128], [-1, 1, 64], [1, -1, 8], [1, 1, 2]];
+  const DY = { 1: 0, 2: 1, 4: 1, 8: 1, 16: 0, 32: -1, 64: -1, 128: -1 };
+  const DX = { 1: 1, 2: 1, 4: 0, 8: -1, 16: -1, 32: -1, 64: 0, 128: 1 };
+  const SOURCES = {
+    esri: {
+      name: 'Esri (спутник)',
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      credit: 'Снимок: Esri, Maxar, Earthstar Geographics'
+    },
+    topo: {
+      name: 'OpenTopoMap (топо)',
+      url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+      credit: 'Карта: © OpenTopoMap (CC-BY-SA), данные © OpenStreetMap'
+    }
+  };
+  const TERRAIN_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+  const TERRAIN_CREDIT = 'Рельеф: Mapzen / AWS Terrain Tiles';
+
+  // ------------------------------------------------------------- изображения
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Не удалось прочитать изображение.'));
+      img.src = src;
+    });
+  }
+  function dataUrlToBytes(dataURL) {
+    const comma = dataURL.indexOf(',');
+    return Uint8Array.from(atob(dataURL.slice(comma + 1)), (c) => c.charCodeAt(0));
+  }
+  function bytesToDataUrl(bytes, mime) {
+    let binary = '';
+    const step = 8192;
+    for (let i = 0; i < bytes.length; i += step) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+    }
+    return `data:${mime};base64,${btoa(binary)}`;
+  }
+  function canvasContext(w, h) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    return { canvas: c, ctx: c.getContext('2d', { willReadFrequently: true }) };
+  }
+  function drawNormalizedImage(dataURL, maxSide) {
+    return loadImage(dataURL).then((img) => {
+      let w = img.naturalWidth, h = img.naturalHeight;
+      if (!w || !h) throw new Error('Пустое изображение.');
+      if (Math.max(w, h) > maxSide) {
+        const k = maxSide / Math.max(w, h);
+        w = Math.max(1, Math.round(w * k));
+        h = Math.max(1, Math.round(h * k));
+      }
+      const { canvas, ctx } = canvasContext(w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      return { canvas, ctx, width: w, height: h, data: ctx.getImageData(0, 0, w, h) };
+    });
+  }
+  function median(values) {
+    values.sort((a, b) => a - b);
+    return values[values.length >> 1];
+  }
+  function rgbToHsv(data) {
+    const n = data.length / 4;
+    const hsv = new Float32Array(n * 3);
+    for (let i = 0, p = 0; i < n; i++, p += 4) {
+      const r = data[p] / 255, g = data[p + 1] / 255, b = data[p + 2] / 255;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+      let h = 0;
+      if (d > 0) {
+        if (max === r) h = 60 * (((g - b) / d) % 6);
+        else if (max === g) h = 60 * ((b - r) / d + 2);
+        else h = 60 * ((r - g) / d + 4);
+        if (h < 0) h += 360;
+        h /= 2; // OpenCV: 0…179
+      }
+      hsv[i * 3] = h;
+      hsv[i * 3 + 1] = max ? (d / max) * 255 : 0;
+      hsv[i * 3 + 2] = max * 255;
+    }
+    return hsv;
+  }
+  function refHsv(hsv, W, H, cx, cy, rad) {
+    cx = Math.max(0, Math.min(W - 1, Math.round(cx)));
+    cy = Math.max(0, Math.min(H - 1, Math.round(cy)));
+    const hs = [], ss = [], vs = [];
+    for (let y = Math.max(0, cy - rad); y < Math.min(H, cy + rad + 1); y++) {
+      for (let x = Math.max(0, cx - rad); x < Math.min(W, cx + rad + 1); x++) {
+        const i = (y * W + x) * 3;
+        hs.push(hsv[i]); ss.push(hsv[i + 1]); vs.push(hsv[i + 2]);
+      }
+    }
+    return [median(hs), median(ss), median(vs)];
+  }
+  function morphology(src, W, H, mode) {
+    const dst = new Uint8Array(src.length);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        let any = false, all = true;
+        for (let dy = -1; dy <= 1 && all; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const ny = y + dy, nx = x + dx;
+            const v = (ny >= 0 && ny < H && nx >= 0 && nx < W) ? src[ny * W + nx] : 0;
+            if (v) any = true; else all = false;
+          }
+        }
+        dst[y * W + x] = mode === 'erode' ? (all ? 1 : 0) : (any ? 1 : 0);
+      }
+    }
+    return dst;
+  }
+  function keepLargest(mask, W, H) {
+    const labels = new Int32Array(W * H);
+    const sizes = [0];
+    let label = 0;
+    const stack = [];
+    for (let i = 0; i < mask.length; i++) {
+      if (!mask[i] || labels[i]) continue;
+      label++;
+      let size = 0;
+      labels[i] = label; stack.push(i);
+      while (stack.length) {
+        const cur = stack.pop();
+        size++;
+        const y = (cur / W) | 0, x = cur - y * W;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const ny = y + dy, nx = x + dx;
+            if (dy === 0 && dx === 0 || ny < 0 || ny >= H || nx < 0 || nx >= W) continue;
+            const ni = ny * W + nx;
+            if (mask[ni] && !labels[ni]) { labels[ni] = label; stack.push(ni); }
+          }
+        }
+      }
+      sizes[label] = size;
+    }
+    if (label <= 1) return mask;
+    let best = 1;
+    for (let i = 2; i <= label; i++) if (sizes[i] > sizes[best]) best = i;
+    const out = new Uint8Array(mask.length);
+    for (let i = 0; i < mask.length; i++) out[i] = labels[i] === best ? 1 : 0;
+    return out;
+  }
+  function segmentWater(rgbData, seed, opts) {
+    const W = rgbData.width, H = rgbData.height;
+    const hsv = rgbToHsv(rgbData.data.data);
+    const seeds = [refHsv(hsv, W, H, seed.x, seed.y, 4)];
+    (opts.extras || []).forEach((p) => seeds.push(refHsv(hsv, W, H, p.x, p.y, 4)));
+    const tol = Math.max(1, Math.min(180, Number(opts.tol) || 60));
+    let mask = new Uint8Array(W * H);
+    if (opts.method === 'color' || opts.method === 'hybrid') {
+      for (let i = 0; i < W * H; i++) {
+        for (let s = 0; s < seeds.length; s++) {
+          const ref = seeds[s];
+          let dh = Math.abs(hsv[i * 3] - ref[0]);
+          dh = Math.min(dh, 180 - dh) * (255 / 180);
+          const ds = hsv[i * 3 + 1] - ref[1];
+          const dv = hsv[i * 3 + 2] - ref[2];
+          if (Math.sqrt(dh * dh + ds * ds + dv * dv) <= tol) { mask[i] = 1; break; }
+        }
+      }
+    }
+    if (opts.method === 'dark' || opts.method === 'hybrid') {
+      const vSeed = Math.max.apply(null, seeds.map((s) => s[2]));
+      for (let i = 0; i < W * H; i++) if (hsv[i * 3 + 2] <= vSeed + tol) mask[i] = 1;
+    }
+    mask = morphology(mask, W, H, 'erode');
+    mask = morphology(mask, W, H, 'dilate');
+    mask = morphology(mask, W, H, 'dilate');
+    mask = morphology(mask, W, H, 'erode');
+    if (opts.keep_largest !== false) mask = keepLargest(mask, W, H);
+    return mask;
+  }
+  function maskToImageData(mask, W, H, fg, bg) {
+    const out = new ImageData(W, H);
+    for (let i = 0, p = 0; i < mask.length; i++, p += 4) {
+      const c = mask[i] ? fg : bg;
+      out.data[p] = c[0]; out.data[p + 1] = c[1]; out.data[p + 2] = c[2]; out.data[p + 3] = c[3];
+    }
+    return out;
+  }
+  function maskPngDataUrl(mask, W, H) {
+    const { canvas, ctx } = canvasContext(W, H);
+    ctx.putImageData(maskToImageData(mask, W, H, [255, 255, 255, 255], [0, 0, 0, 255]), 0, 0);
+    return canvas.toDataURL('image/png');
+  }
+  function maskFromDataUrl(dataURL) {
+    return loadImage(dataURL).then((img) => {
+      const W = img.naturalWidth, H = img.naturalHeight;
+      const { ctx } = canvasContext(W, H);
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, W, H).data;
+      const mask = new Uint8Array(W * H);
+      for (let i = 0; i < mask.length; i++) mask[i] = d[i * 4] > 127 ? 1 : 0;
+      return { mask, W, H };
+    });
+  }
+
+  // ----------------------------------------------------------- фрактальный D
+  function boundaryMask(mask, W, H) {
+    const dil = morphology(mask, W, H, 'dilate');
+    const ero = morphology(mask, W, H, 'erode');
+    const out = new Uint8Array(mask.length);
+    for (let i = 0; i < out.length; i++) out[i] = dil[i] && !ero[i] ? 1 : 0;
+    return out;
+  }
+  function skeletonMask(mask, W, H) {
+    const cur = Uint8Array.from(mask);
+    const marks = new Uint8Array(W * H);
+    for (let pass = 0; pass < 200; pass++) {
+      let changed = false;
+      for (let sub = 0; sub < 2; sub++) {
+        marks.fill(0);
+        for (let y = 1; y < H - 1; y++) {
+          for (let x = 1; x < W - 1; x++) {
+            const i = y * W + x;
+            if (!cur[i]) continue;
+            const p2 = cur[i - W], p3 = cur[i - W + 1], p4 = cur[i + 1],
+              p5 = cur[i + W + 1], p6 = cur[i + W], p7 = cur[i + W - 1],
+              p8 = cur[i - 1], p9 = cur[i - W - 1];
+            const seq = [p2, p3, p4, p5, p6, p7, p8, p9];
+            let B = 0, A = 0;
+            for (let k = 0; k < 8; k++) {
+              B += seq[k];
+              if (!seq[k] && seq[(k + 1) % 8]) A++;
+            }
+            const c1 = sub === 0
+              ? (!p2 || !p4 || !p6) && (!p4 || !p6 || !p8)
+              : (!p2 || !p4 || !p8) && (!p2 || !p6 || !p8);
+            if (B >= 2 && B <= 6 && A === 1 && c1) marks[i] = 1;
+          }
+        }
+        for (let i = 0; i < marks.length; i++) if (marks[i]) { cur[i] = 0; changed = true; }
+      }
+      if (!changed) break;
+    }
+    return cur;
+  }
+  function cantorDimension(mask, W, H, maxDivs) {
+    let sum = 0;
+    for (let i = 0; i < mask.length; i++) sum += mask[i];
+    if (!sum) throw new Error('Маска пуста — нечего считать. Кликните точку на реке и/или увеличьте допуск.');
+    const side = Math.max(W, H);
+    const divs = Math.max(2, Math.min(Number(maxDivs) || 60, Math.floor(side / 2)));
+    const table = [];
+    for (let n = 1; n <= divs; n++) {
+      const occupied = new Set();
+      for (let i = 0; i < mask.length; i++) {
+        if (!mask[i]) continue;
+        const y = (i / W) | 0, x = i - y * W;
+        occupied.add(((y * n / side) | 0) * n + ((x * n / side) | 0));
+      }
+      table.push([n, side / n, occupied.size]);
+    }
+    const fitRows = table.filter((r) => r[2] >= 2);
+    if (fitRows.length < 3) throw new Error('Слишком мало точек для регрессии — объект слишком мал или плохо выделен.');
+    const xs = fitRows.map((r) => Math.log10(1 / r[1]));
+    const ys = fitRows.map((r) => Math.log10(r[2]));
+    const n = xs.length;
+    const mx = xs.reduce((a, b) => a + b, 0) / n;
+    const my = ys.reduce((a, b) => a + b, 0) / n;
+    let sxx = 0, sxy = 0;
+    for (let i = 0; i < n; i++) { sxx += (xs[i] - mx) ** 2; sxy += (xs[i] - mx) * (ys[i] - my); }
+    const h = sxy / sxx;
+    const intercept = my - h * mx;
+    let ssRes = 0, ssTot = 0;
+    for (let i = 0; i < n; i++) {
+      ssRes += (ys[i] - (h * xs[i] + intercept)) ** 2;
+      ssTot += (ys[i] - my) ** 2;
+    }
+    const r2 = ssTot > 0 ? 1 - ssRes / ssTot : 1;
+    const dh = Math.sqrt((ssRes / Math.max(n - 2, 1)) / sxx);
+    return {
+      D: 1 + h / 2, h, dh, dD: dh / 2, r2, intercept,
+      table, fit_rows: fitRows, n_divs_used: divs,
+      water_pixels: sum
+    };
+  }
+
+  function normInv(p) {
+    // Approximating the normal quantile (Acklam's rational approximation)
+    const a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+      1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00];
+    const b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+      6.680131188771972e+01, -1.328068155288572e+01];
+    const c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+      -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00];
+    const d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+      3.754408661907416e+00];
+    const plow = 0.02425;
+    if (p < plow) {
+      const q = Math.sqrt(-2 * Math.log(p));
+      return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+        ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+    }
+    if (p > 1 - plow) return -normInv(1 - p);
+    const q = p - 0.5, r = q * q;
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
+      (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+  }
+  function streamStats(D, dD) {
+    const qMean = 100;
+    const cv = Math.max(0.10, Math.min(0.80, 2 * (D - 1)));
+    const cs = 2 * cv;
+    const rel = 100 * (dD / Math.max(D - 1, 1e-9));
+    const kp = {}, qp = {};
+    MAJOR_P.forEach((p) => {
+      const z = normInv(1 - p / 100);
+      const k = 1 + (z + (cs / 6) * (z * z - 1)) * cv;
+      kp[p] = k; qp[p] = k * qMean;
+    });
+    return {
+      Q_mean: qMean, Cv: cv, Cs: cs,
+      rel_err_Q: rel, rel_err_Cv: rel, rel_err_Cs: rel * 1.5,
+      kp_by_p: kp, qp_by_p: qp,
+      qp: MAJOR_P.map((p) => ({ p, k: kp[p], q: qp[p] }))
+    };
+  }
+  function makePlot(result) {
+    const { canvas, ctx } = canvasContext(720, 380);
+    const W = canvas.width, H = canvas.height;
+    ctx.fillStyle = '#F3EBE0'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#FBF7F0'; ctx.fillRect(48, 18, W - 66, H - 68);
+    const rows = result.fit_rows;
+    const xs = rows.map((r) => Math.log10(1 / r[1]));
+    const ys = rows.map((r) => Math.log10(r[2]));
+    if (!xs.length) return canvas.toDataURL('image/png');
+    const x0 = Math.min.apply(null, xs) - 0.08, x1 = Math.max.apply(null, xs) + 0.08;
+    const y0 = Math.min.apply(null, ys) - 0.08, y1 = Math.max.apply(null, ys) + 0.08;
+    const px = (x) => 48 + (x - x0) / (x1 - x0) * (W - 66);
+    const py = (y) => 18 + (H - 68) - (y - y0) / (y1 - y0) * (H - 68);
+    ctx.strokeStyle = '#DACAB0'; ctx.lineWidth = 1;
+    for (let i = 0; i <= 6; i++) {
+      const x = 48 + i * (W - 66) / 6, y = 18 + i * (H - 68) / 6;
+      ctx.beginPath(); ctx.moveTo(x, 18); ctx.lineTo(x, H - 50); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(48, y); ctx.lineTo(W - 18, y); ctx.stroke();
+    }
+    ctx.fillStyle = '#4d3524'; ctx.font = '12px Segoe UI, sans-serif';
+    ctx.fillText('log₁₀(1/ε)', W / 2 - 34, H - 16);
+    ctx.save(); ctx.translate(14, H / 2 + 40); ctx.rotate(-Math.PI / 2);
+    ctx.fillText('log₁₀ N(ε)', 0, 0); ctx.restore();
+    ctx.beginPath(); ctx.moveTo(px(x0), py(result.h * x0 + result.intercept));
+    ctx.lineTo(px(x1), py(result.h * x1 + result.intercept));
+    ctx.strokeStyle = '#733933'; ctx.lineWidth = 2; ctx.stroke();
+    rows.forEach((r) => {
+      ctx.beginPath(); ctx.arc(px(Math.log10(1 / r[1])), py(Math.log10(r[2])), 3.2, 0, 2 * Math.PI);
+      ctx.fillStyle = '#9CA75A'; ctx.fill();
+      ctx.strokeStyle = '#8B6431'; ctx.lineWidth = 0.8; ctx.stroke();
+    });
+    ctx.fillStyle = '#733933'; ctx.font = 'bold 13px Segoe UI, sans-serif';
+    ctx.fillText('Канторовский метод: log N(ε) от log(1/ε)', 58, 12);
+    return canvas.toDataURL('image/png');
+  }
+  function cleanResult(r, object) {
+    const stream = streamStats(r.D, r.dD);
+    return {
+      D: r.D, h: r.h, dh: r.dh, dD: r.dD, r2: r.r2, intercept: r.intercept,
+      water_pixels: r.water_pixels, object: object || 'skeleton',
+      table: r.table.map((row) => [row[0], Math.round(row[1] * 1000) / 1000, row[2]]),
+      fit_rows: r.fit_rows, n_divs_used: r.n_divs_used,
+      method: 'Кантор (квадраты), D = 1 + h/2', plot: makePlot(r), stream: stream,
+      qp: MAJOR_P.map((p) => ({ p, k: stream.kp_by_p[p], q: stream.qp_by_p[p] }))
+    };
+  }
+
+  // ------------------------------------------------------------------ PNG/meta
+  const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+  function crc32(bytes) {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  function pngWithMetadata(dataURL, texts) {
+    const src = dataUrlToBytes(dataURL);
+    let offset = 8, iend = -1;
+    while (offset + 12 <= src.length) {
+      const len = (src[offset] << 24) | (src[offset + 1] << 16) | (src[offset + 2] << 8) | src[offset + 3];
+      const type = String.fromCharCode(src[offset + 4], src[offset + 5], src[offset + 6], src[offset + 7]);
+      if (type === 'IEND') { iend = offset; break; }
+      offset += 12 + len;
+    }
+    if (iend < 0) return dataURL;
+    const extra = [];
+    Object.keys(texts).forEach((key) => {
+      const value = String(texts[key] === undefined || texts[key] === null ? '' : texts[key]);
+      const raw = new TextEncoder().encode('tEXt' + key + '\0' + value);
+      const chunk = new Uint8Array(12 + raw.length);
+      const view = new DataView(chunk.buffer);
+      view.setUint32(0, raw.length - 4);
+      chunk.set(raw.subarray(0, 4), 4);
+      chunk.set(raw.subarray(4), 8);
+      for (let i = 0; i < 4; i++) chunk[chunk.length - 4 + i] = 0;
+      view.setUint32(chunk.length - 4, crc32(raw));
+      extra.push(chunk);
+    });
+    const total = iend + extra.reduce((a, c) => a + c.length, 0);
+    const out = new Uint8Array(total);
+    out.set(src.subarray(0, iend));
+    let pos = iend;
+    extra.forEach((c) => { out.set(c, pos); pos += c.length; });
+    out.set(src.subarray(iend));
+    return bytesToDataUrl(out, 'image/png');
+  }
+
+  // --------------------------------------------------------------------- карта
+  function lonlatToTile(lon, lat, z) {
+    const n = Math.pow(2, z);
+    const la = Math.max(-MAX_LAT, Math.min(MAX_LAT, lat)) * Math.PI / 180;
+    return {
+      x: (lon + 180) / 360 * n,
+      y: (1 - Math.log(Math.tan(la) + 1 / Math.cos(la)) / Math.PI) / 2 * n
+    };
+  }
+  function tileToLonlat(x, y, z) {
+    const n = Math.pow(2, z);
+    return {
+      lon: x / n * 360 - 180,
+      lat: Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180 / Math.PI
+    };
+  }
+  function resolutionM(lat, z) {
+    return 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, z);
+  }
+  function viewGeometry(lon, lat, zoom, width, height) {
+    const c = lonlatToTile(lon, lat, zoom);
+    return {
+      x0: c.x - width / (2 * TILE), y0: c.y - height / (2 * TILE),
+      z: zoom, w: width, h: height, center_lon: lon, center_lat: lat
+    };
+  }
+  function tileRange(x0, y0, x1, y1) {
+    const out = [];
+    for (let y = Math.floor(y0); y <= Math.floor(y1); y++) {
+      for (let x = Math.floor(x0); x <= Math.floor(x1); x++) out.push([x, y]);
+    }
+    return out;
+  }
+  function fetchImage(url) {
+    return fetch(url, { mode: 'cors' }).then((r) => {
+      if (!r.ok) throw new Error('tile');
+      return r.blob();
+    }).then((blob) => {
+      const url = URL.createObjectURL(blob);
+      return loadImage(url).then((img) => { URL.revokeObjectURL(url); return img; });
+    });
+  }
+  function valleyCenter(v) {
+    return 0.5 + 0.045 * Math.sin(2 * Math.PI * (v - 0.5))
+      + 0.018 * Math.sin(4 * Math.PI * (v - 0.5));
+  }
+  function terrainField(u, v) {
+    const d = (u - valleyCenter(v)) / 0.09;
+    const valley = Math.exp(-d * d);
+    const ridges = 0.55 * Math.sin(2 * Math.PI * (2.3 * u + 1.1 * v) + 0.4)
+      + 0.30 * Math.sin(2 * Math.PI * (4.7 * u - 0.8 * v) + 1.7)
+      + 0.15 * Math.sin(2 * Math.PI * (9.1 * u + 3.3 * v));
+    const small = 0.35 * Math.sin(2 * Math.PI * (17 * u + 5 * v) + 2.1);
+    return -1200 * v + 120 * ridges * (1 - valley) + 25 * small * (1 - valley) - 400 * valley;
+  }
+  function syntheticDem(geo, demZoom, margin) {
+    const k = Math.pow(2, demZoom - geo.z);
+    const tx0 = Math.floor(geo.x0 * k - margin), ty0 = Math.floor(geo.y0 * k - margin);
+    const tx1 = Math.floor((geo.x0 + geo.w / TILE) * k + margin);
+    const ty1 = Math.floor((geo.y0 + geo.h / TILE) * k + margin);
+    const nx = Math.max(1, tx1 - tx0 + 1), ny = Math.max(1, ty1 - ty0 + 1);
+    const H = ny * TILE, W = nx * TILE;
+    const dem = new Float32Array(H * W);
+    for (let y = 0; y < H; y++) {
+      const ty = (ty0 + (y + 0.5) / TILE) / k;
+      const v = (ty - geo.y0) * TILE / geo.h;
+      for (let x = 0; x < W; x++) {
+        const tx = (tx0 + (x + 0.5) / TILE) / k;
+        const u = (tx - geo.x0) * TILE / geo.w;
+        dem[y * W + x] = terrainField(u, v);
+      }
+    }
+    return { dem, W, H, dgeo: { x0: tx0, y0: ty0, z: demZoom, w: W, h: H, synthetic: true } };
+  }
+  function syntheticBase(geo, source) {
+    const W = geo.w, H = geo.h;
+    const { canvas, ctx } = canvasContext(W, H);
+    const img = ctx.createImageData(W, H);
+    let lo = Infinity, hi = -Infinity;
+    const vals = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) {
+      const v = (y + 0.5) / H;
+      for (let x = 0; x < W; x++) vals[y * W + x] = terrainField((x + 0.5) / W, v);
+    }
+    for (let i = 0; i < vals.length; i++) { if (vals[i] < lo) lo = vals[i]; if (vals[i] > hi) hi = vals[i]; }
+    const topo = source === 'topo';
+    const low = topo ? [206, 214, 178] : [63, 96, 63];
+    const mid = topo ? [174, 190, 141] : [104, 123, 70];
+    const high = topo ? [214, 198, 166] : [149, 132, 101];
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        const z = Math.max(0, Math.min(1, (vals[i] - lo) / Math.max(hi - lo, 1e-6)));
+        const dx = (vals[i + W] !== undefined && vals[i - W] !== undefined)
+          ? (vals[i + W] - vals[i - W]) / (hi - lo) : 0;
+        const dy = (vals[i + 1] !== undefined && vals[i - 1] !== undefined)
+          ? (vals[i + 1] - vals[i - 1]) / (hi - lo) : 0;
+        const norm = Math.sqrt(dx * dx + dy * dy + 0.015);
+        const shade = Math.max(0.35, Math.min(1.15, 0.72 + 0.45 * (-dx * 0.7 - dy * 0.7 + 0.7) / norm));
+        const t = Math.min(1, z * 2), t2 = Math.max(0, Math.min(1, (z - 0.5) * 2));
+        const p = i * 4;
+        for (let c = 0; c < 3; c++) {
+          let color = low[c] * (1 - t) + mid[c] * t;
+          color = color * (1 - t2) + high[c] * t2;
+          img.data[p + c] = Math.max(0, Math.min(255, color * shade));
+        }
+        img.data[p + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    ctx.lineCap = 'round';
+    const width = Math.max(2, Math.round(Math.min(W, H) / 260));
+    for (const [color, w] of [['rgba(63,97,116,.4)', width + 5], ['rgba(58,116,152,.86)', width]]) {
+      ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath();
+      for (let y = 0; y < H; y++) {
+        const x = valleyCenter((y + 0.5) / H) * W;
+        if (y === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    return canvas;
+  }
+  function blendRelief(canvas, dem, W, H) {
+    const { ctx } = canvasContext(W, H);
+    const img = ctx.createImageData(W, H);
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < dem.length; i++) { if (dem[i] < lo) lo = dem[i]; if (dem[i] > hi) hi = dem[i]; }
+    const range = Math.max(hi - lo, 1e-6);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const sx = Math.min(dem.W - 1, Math.floor(x / W * dem.W));
+        const sy = Math.min(dem.H - 1, Math.floor(y / H * dem.H));
+        const i = sy * dem.W + sx;
+        const zx = Math.min(dem.W - 1, sx + 1), zy = Math.min(dem.H - 1, sy + 1);
+        const dx = (dem[sy * dem.W + zx] - dem[i]) / range;
+        const dy = (dem[zy * dem.W + sx] - dem[i]) / range;
+        const norm = Math.sqrt(dx * dx + dy * dy + 0.02);
+        const shade = Math.max(0.4, Math.min(1, (-dx * 0.6 - dy * 0.6 + 0.8) / norm));
+        const p = (y * W + x) * 4;
+        img.data[p] = img.data[p + 1] = img.data[p + 2] = shade * 255;
+        img.data[p + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const base = canvasContext(W, H);
+    base.ctx.drawImage(canvas, 0, 0);
+    base.ctx.globalAlpha = 0.55;
+    base.ctx.drawImage(ctx.canvas, 0, 0);
+    return base.canvas;
+  }
+
+  function loadTerrain(geo, demZoom, margin) {
+    const k = Math.pow(2, demZoom - geo.z);
+    const tx0 = Math.floor(geo.x0 * k - margin), ty0 = Math.floor(geo.y0 * k - margin);
+    const tx1 = Math.floor((geo.x0 + geo.w / TILE) * k + margin);
+    const ty1 = Math.floor((geo.y0 + geo.h / TILE) * k + margin);
+    const nx = Math.max(1, tx1 - tx0 + 1), ny = Math.max(1, ty1 - ty0 + 1);
+    const W = nx * TILE, H = ny * TILE;
+    const tiles = tileRange(tx0, ty0, tx1, ty1);
+    const jobs = tiles.map(([tx, ty]) => fetchImage(TERRAIN_URL
+      .replace('{z}', demZoom).replace('{x}', tx).replace('{y}', ty))
+      .then((img) => {
+        const c = canvasContext(TILE, TILE);
+        c.ctx.drawImage(img, 0, 0);
+        const d = c.ctx.getImageData(0, 0, TILE, TILE).data;
+        const heights = new Float32Array(TILE * TILE);
+        for (let i = 0; i < heights.length; i++) {
+          heights[i] = d[i * 4] * 256 + d[i * 4 + 1] + d[i * 4 + 2] / 256 - 32768;
+        }
+        return { tx, ty, heights };
+      }).catch(() => null));
+    return Promise.all(jobs).then((parts) => {
+      if (parts.every((p) => !p)) return null;
+      const dem = new Float32Array(W * H);
+      dem.fill(NaN);
+      parts.forEach((p) => {
+        if (!p) return;
+        const i = tiles.findIndex(([x, y]) => x === p.tx && y === p.ty);
+        const ox = (tiles[i][0] - tx0) * TILE, oy = (tiles[i][1] - ty0) * TILE;
+        for (let y = 0; y < TILE; y++) {
+          dem.set(p.heights.subarray(y * TILE, y * TILE + TILE), (oy + y) * W + ox);
+        }
+      });
+      const finite = [];
+      for (let i = 0; i < dem.length; i++) if (Number.isFinite(dem[i])) finite.push(dem[i]);
+      const med = median(finite) || 0;
+      for (let i = 0; i < dem.length; i++) if (!Number.isFinite(dem[i])) dem[i] = med;
+      return { dem, W, H, dgeo: { x0: tx0, y0: ty0, z: demZoom, w: W, h: H } };
+    });
+  }
+  function sampleDemToView(info, geo, W, H) {
+    const k = Math.pow(2, info.dgeo.z - geo.z);
+    const out = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) {
+      const ty = (geo.y0 + (y + 0.5) / TILE) * k - info.dgeo.y0;
+      const sy = Math.max(0, Math.min(info.H - 1, Math.floor(ty * TILE)));
+      for (let x = 0; x < W; x++) {
+        const tx = (geo.x0 + (x + 0.5) / TILE) * k - info.dgeo.x0;
+        const sx = Math.max(0, Math.min(info.W - 1, Math.floor(tx * TILE)));
+        out[y * W + x] = info.dem[sy * info.W + sx];
+      }
+    }
+    return { dem: out, W, H };
+  }
+
+  function mapView(params) {
+    const lon = Number(params.lon), lat = Number(params.lat), z = Number(params.zoom);
+    const W = Math.max(240, Math.min(1100, Number(params.width) || 900));
+    const H = Math.max(180, Math.min(760, Number(params.height) || 580));
+    const source = SOURCES[params.source] ? params.source : 'esri';
+    const geo = viewGeometry(lon, lat, z, W, H);
+    const coords = tileRange(geo.x0, geo.y0, geo.x0 + W / TILE, geo.y0 + H / TILE)
+      .filter(([x, y]) => x >= 0 && y >= 0 && x < Math.pow(2, z) && y < Math.pow(2, z));
+    const { canvas, ctx } = canvasContext(W, H);
+    ctx.fillStyle = '#EDE4D6'; ctx.fillRect(0, 0, W, H);
+    const sub = ['a', 'b', 'c'];
+    const jobs = coords.map(([x, y]) => {
+      let url = SOURCES[source].url;
+      if (url.includes('{s}')) url = url.replace('{s}', sub[(x + y) % 3]);
+      url = url.replace('{z}', z).replace('{x}', x).replace('{y}', y);
+      return fetchImage(url).then((img) => ({ img, x, y })).catch(() => null);
+    });
+    return Promise.all(jobs).then((tiles) => {
+      let loaded = 0;
+      tiles.forEach((t) => {
+        if (!t) return;
+        loaded++;
+        ctx.drawImage(t.img, Math.round((t.x - geo.x0) * TILE), Math.round((t.y - geo.y0) * TILE), TILE, TILE);
+      });
+      const demo = loaded === 0;
+      if (demo) ctx.drawImage(syntheticBase(geo, source), 0, 0);
+      const answer = (base) => ({
+        ok: true, image: base.toDataURL('image/jpeg', 0.88),
+        credit: SOURCES[source].credit + ' · ' + TERRAIN_CREDIT + (demo ? ' (демо)' : ''),
+        demo, cell_m: Math.round(resolutionM(lat, z) * 100) / 100, geo
+      });
+      if (!params.relief) return answer(canvas);
+      const dz = Math.min(z, 12);
+      return loadTerrain(geo, dz, 0).then((real) => {
+        const info = real || syntheticDem(geo, Math.min(z, 10), 0);
+        return answer(blendRelief(canvas, sampleDemToView(info, geo, W, H), W, H));
+      });
+    });
+  }
+
+  // --------------------------------------------------------------- гидрология
+  function fillDepressions(dem, W, H, eps) {
+    const filled = Float64Array.from(dem);
+    const visited = new Uint8Array(W * H);
+    const heapZ = new Float64Array(W * H + 4);
+    const heapI = new Int32Array(W * H + 4);
+    let size = 0;
+    const push = (z, i) => {
+      let p = size++;
+      heapZ[p] = z; heapI[p] = i;
+      while (p > 0) {
+        const parent = (p - 1) >> 1;
+        if (heapZ[parent] <= heapZ[p]) break;
+        const tz = heapZ[parent], ti = heapI[parent];
+        heapZ[parent] = heapZ[p]; heapI[parent] = heapI[p];
+        heapZ[p] = tz; heapI[p] = ti;
+        p = parent;
+      }
+    };
+    const pop = () => {
+      const rz = heapZ[0], ri = heapI[0];
+      size--;
+      if (size > 0) {
+        heapZ[0] = heapZ[size]; heapI[0] = heapI[size];
+        let p = 0;
+        for (;;) {
+          const l = 2 * p + 1, r = l + 1;
+          let m = p;
+          if (l < size && heapZ[l] < heapZ[m]) m = l;
+          if (r < size && heapZ[r] < heapZ[m]) m = r;
+          if (m === p) break;
+          const tz = heapZ[m], ti = heapI[m];
+          heapZ[m] = heapZ[p]; heapI[m] = heapI[p];
+          heapZ[p] = tz; heapI[p] = ti;
+          p = m;
+        }
+      }
+      return [rz, ri];
+    };
+    for (let x = 0; x < W; x++) {
+      [0, H - 1].forEach((y) => {
+        const i = y * W + x;
+        if (!visited[i]) { visited[i] = 1; push(filled[i], i); }
+      });
+    }
+    for (let y = 0; y < H; y++) {
+      [0, W - 1].forEach((x) => {
+        const i = y * W + x;
+        if (!visited[i]) { visited[i] = 1; push(filled[i], i); }
+      });
+    }
+    while (size) {
+      const [z, idx] = pop();
+      const y = (idx / W) | 0, x = idx - y * W;
+      for (let d = 0; d < D8.length; d++) {
+        const ny = y + D8[d][0], nx = x + D8[d][1];
+        if (ny < 0 || ny >= H || nx < 0 || nx >= W) continue;
+        const ni = ny * W + nx;
+        if (visited[ni]) continue;
+        visited[ni] = 1;
+        if (filled[ni] <= z) filled[ni] = z + eps;
+        push(filled[ni], ni);
+      }
+    }
+    return filled;
+  }
+  function flowDirections(filled, W, H, cell) {
+    const best = new Float32Array(W * H);
+    const fdir = new Uint8Array(W * H);
+    D8.forEach(([dy, dx, code]) => {
+      const dist = Math.hypot(dy, dx) * cell;
+      const ys0 = Math.max(0, -dy), ys1 = Math.min(H, H - dy);
+      const xs0 = Math.max(0, -dx), xs1 = Math.min(W, W - dx);
+      for (let y = ys0; y < ys1; y++) {
+        for (let x = xs0; x < xs1; x++) {
+          const i = y * W + x, ni = (y + dy) * W + (x + dx);
+          const slope = (filled[i] - filled[ni]) / dist;
+          if (slope > best[i]) { best[i] = slope; fdir[i] = code; }
+        }
+      }
+    });
+    return fdir;
+  }
+  function flowAccumulation(filled, fdir, W, H) {
+    const acc = new Float64Array(W * H).fill(1);
+    const order = new Int32Array(W * H);
+    for (let i = 0; i < order.length; i++) order[i] = i;
+    order.sort((a, b) => filled[b] - filled[a]);
+    for (let k = 0; k < order.length; k++) {
+      const idx = order[k], d = fdir[idx];
+      if (!d) continue;
+      const y = (idx / W) | 0, x = idx - y * W;
+      const ny = y + DY[d], nx = x + DX[d];
+      if (ny >= 0 && ny < H && nx >= 0 && nx < W) acc[ny * W + nx] += acc[idx];
+    }
+    return acc;
+  }
+  function catchmentUpstream(fdir, W, H, oy, ox) {
+    if (oy < 0 || oy >= H || ox < 0 || ox >= W) throw new Error('Створ за пределами рельефа.');
+    const seen = new Uint8Array(W * H);
+    const stack = [oy * W + ox];
+    seen[stack[0]] = 1;
+    let count = 1;
+    while (stack.length) {
+      const cur = stack.pop(), y = (cur / W) | 0, x = cur - y * W;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dy && !dx) continue;
+          const ny = y + dy, nx = x + dx;
+          if (ny < 0 || ny >= H || nx < 0 || nx >= W) continue;
+          const ni = ny * W + nx;
+          if (seen[ni]) continue;
+          const d = fdir[ni];
+          if (DY[d] === -dy && DX[d] === -dx) { seen[ni] = 1; count++; stack.push(ni); }
+        }
+      }
+    }
+    return { seen, count };
+  }
+  function mainChannel(fdir, acc, catchMask, W, H, oy, ox) {
+    const line = new Uint8Array(W * H);
+    if (!catchMask[oy * W + ox]) return { line, count: 0 };
+    line[oy * W + ox] = 1;
+    let cy = oy, cx = ox, count = 1;
+    const minAcc = Math.max(2, 0.02 * acc[oy * W + ox]);
+    for (let step = 0; step < W * H; step++) {
+      let best = -1, bestIdx = -1;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dy && !dx) continue;
+          const ny = cy + dy, nx = cx + dx;
+          if (ny < 0 || ny >= H || nx < 0 || nx >= W) continue;
+          const ni = ny * W + nx;
+          if (!catchMask[ni] || line[ni]) continue;
+          const d = fdir[ni];
+          if (DY[d] !== -dy || DX[d] !== -dx) continue;
+          if (acc[ni] > best) { best = acc[ni]; bestIdx = ni; }
+        }
+      }
+      if (bestIdx < 0 || best < minAcc) break;
+      cy = (bestIdx / W) | 0; cx = bestIdx - cy * W;
+      line[bestIdx] = 1; count++;
+    }
+    if (count < 5) {
+      const cut = 0.6 * acc[oy * W + ox];
+      for (let i = 0; i < line.length; i++) line[i] = catchMask[i] && acc[i] >= cut ? 1 : 0;
+      count = line.reduce((a, b) => a + b, 0);
+    }
+    return { line, count };
+  }
+  function strahlerOrder(fdir, network, acc, W, H) {
+    const cells = [];
+    for (let i = 0; i < network.length; i++) if (network[i]) cells.push(i);
+    if (!cells.length) return 1;
+    cells.sort((a, b) => acc[a] - acc[b]);
+    const best = new Int16Array(W * H), eq = new Int16Array(W * H);
+    let result = 1;
+    cells.forEach((i) => {
+      const y = (i / W) | 0, x = i - y * W;
+      const top = best[i], cnt = eq[i];
+      const st = top === 0 ? 1 : (cnt >= 2 ? top + 1 : top);
+      const d = fdir[i];
+      const ny = y + (DY[d] || 0), nx = x + (DX[d] || 0);
+      if (ny < 0 || ny >= H || nx < 0 || nx >= W) return;
+      const ni = ny * W + nx;
+      if (!network[ni]) return;
+      if (st > best[ni]) { best[ni] = st; eq[ni] = 1; }
+      else if (st === best[ni]) eq[ni]++;
+      if (st > result) result = st;
+    });
+    return result;
+  }
+  function demAtScreen(geo, dgeo, row, col) {
+    const lonlat = tileToLonlat(dgeo.x0 + (col + 0.5) / TILE, dgeo.y0 + (row + 0.5) / TILE, dgeo.z);
+    const t = lonlatToTile(lonlat.lon, lonlat.lat, geo.z);
+    return [(t.x - geo.x0) * TILE, (t.y - geo.y0) * TILE];
+  }
+  function overlayMap(baseCanvas, geo, dgeo, catchment, network, line, outletPx) {
+    const ctx = baseCanvas.getContext('2d');
+    const W = baseCanvas.width, H = baseCanvas.height;
+    ctx.save();
+    ctx.fillStyle = 'rgba(156,167,90,.30)';
+    for (let i = 0; i < catchment.length; i++) {
+      if (!catchment[i]) continue;
+      const [px, py] = demAtScreen(geo, dgeo, (i / dgeo.w) | 0, i % dgeo.w);
+      if (px < -8 || py < -8 || px > W + 8 || py > H + 8) continue;
+      ctx.fillRect(px, py, Math.max(1.4, TILE / Math.pow(2, geo.z - dgeo.z)), Math.max(1.4, TILE / Math.pow(2, geo.z - dgeo.z)));
+    }
+    ctx.fillStyle = 'rgba(139,100,49,.75)';
+    for (let i = 0; i < network.length; i++) {
+      if (!network[i]) continue;
+      const [px, py] = demAtScreen(geo, dgeo, (i / dgeo.w) | 0, i % dgeo.w);
+      if (px >= 0 && py >= 0 && px <= W && py <= H) ctx.fillRect(px, py, 1.4, 1.4);
+    }
+    ctx.fillStyle = 'rgba(115,57,51,.95)';
+    for (let i = 0; i < line.length; i++) {
+      if (!line[i]) continue;
+      const [px, py] = demAtScreen(geo, dgeo, (i / dgeo.w) | 0, i % dgeo.w);
+      if (px >= 0 && py >= 0 && px <= W && py <= H) ctx.fillRect(px - 0.8, py - 0.8, 2.2, 2.2);
+    }
+    ctx.strokeStyle = '#ff3c3c'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(outletPx[0], outletPx[1], 9, 0, 2 * Math.PI); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(outletPx[0] - 15, outletPx[1]); ctx.lineTo(outletPx[0] + 15, outletPx[1]);
+    ctx.moveTo(outletPx[0], outletPx[1] - 15); ctx.lineTo(outletPx[0], outletPx[1] + 15);
+    ctx.stroke();
+    ctx.restore();
+    return baseCanvas.toDataURL('image/png');
+  }
+
+  function mapAnalyze(params) {
+    const lon = Number(params.lon), lat = Number(params.lat), z = Number(params.zoom);
+    const W = Math.max(240, Math.min(1100, Number(params.width) || 900));
+    const H = Math.max(180, Math.min(760, Number(params.height) || 580));
+    const source = SOURCES[params.source] ? params.source : 'esri';
+    const outletLon = Number(params.outlet_lon), outletLat = Number(params.outlet_lat);
+    const geo = viewGeometry(lon, lat, z, W, H);
+    const view = mapView({ ...params, relief: false });
+    const demZoom = Math.min(z, 10);
+    const demPromise = loadTerrain(geo, demZoom, 1)
+      .then((real) => real || syntheticDem(geo, demZoom, 1));
+    return Promise.all([view, demPromise]).then(([viewResult, demInfo]) => {
+      const dem = demInfo.dem, dW = demInfo.W, dH = demInfo.H, dgeo = demInfo.dgeo;
+      const cell = resolutionM(lat, dgeo.z);
+      const filled = fillDepressions(dem, dW, dH, 0.05);
+      const fdir = flowDirections(filled, dW, dH, cell);
+      const acc = flowAccumulation(filled, fdir, dW, dH);
+      const op = lonlatToTile(outletLon, outletLat, demZoom);
+      const oy = Math.round((op.y - dgeo.y0) * TILE), ox = Math.round((op.x - dgeo.x0) * TILE);
+      if (oy < 0 || oy >= dH || ox < 0 || ox >= dW) throw new Error('Створ за пределами загруженного рельефа.');
+      const catchResult = catchmentUpstream(fdir, dW, dH, oy, ox);
+      if (catchResult.count < 3) throw new Error('Створ попал на водораздел или в бессточную впадину. Кликните по видимому руслу реки.');
+      const catchMask = catchResult.seen;
+      let maxAcc = 0;
+      for (let i = 0; i < catchMask.length; i++) if (catchMask[i] && acc[i] > maxAcc) maxAcc = acc[i];
+      const threshold = Math.max(3, 0.01 * maxAcc);
+      const net = new Uint8Array(catchMask.length);
+      let netCount = 0;
+      for (let i = 0; i < net.length; i++) if (catchMask[i] && acc[i] >= threshold) { net[i] = 1; netCount++; }
+      const ch = mainChannel(fdir, acc, catchMask, dW, dH, oy, ox);
+      if (ch.count < 10) throw new Error('Главное русло слишком короткое для расчёта D. Попробуйте кликнуть ниже по течению.');
+      const strahler = strahlerOrder(fdir, net, acc, dW, dH);
+      const r = cantorDimension(ch.line, dW, dH, 60);
+      const result = cleanResult(r, 'skeleton');
+      const base = canvasContext(W, H);
+      return loadImage(viewResult.image).then((img) => {
+        base.ctx.drawImage(img, 0, 0, W, H);
+        const tp = lonlatToTile(outletLon, outletLat, geo.z);
+        const image = overlayMap(base.canvas, geo, dgeo, catchMask, net, ch.line,
+          [(tp.x - geo.x0) * TILE, (tp.y - geo.y0) * TILE]);
+        return {
+          ok: true, image, demo: !!viewResult.demo,
+          credit: SOURCES[source].credit + ' · ' + TERRAIN_CREDIT +
+            (viewResult.demo ? ' (демо-рельеф)' : ''),
+          map: {
+            area_km2: Math.round(catchResult.count * cell * cell / 1e6 * 1000) / 1000,
+            channel_km: Math.round(ch.count * cell / 1000 * 1000) / 1000,
+            cells: catchResult.count, line_cells: ch.count, network_cells: netCount,
+            threshold: Math.round(threshold * 100) / 100, strahler,
+            cell_m: Math.round(cell * 100) / 100, dem_zoom: dgeo.z,
+            outlet_lat: Math.round(outletLat * 1e5) / 1e5,
+            outlet_lon: Math.round(outletLon * 1e5) / 1e5
+          },
+          result
+        };
+      });
+    });
+  }
+
+  // -------------------------------------------------------------------- отчёт
+  function escapeHtml(value) {
+    return String(value === undefined || value === null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function tableHtml(rows, head) {
+    if (!rows || !rows.length) return '';
+    return '<table><thead><tr>' + head.map((h) => `<th>${escapeHtml(h)}</th>`).join('') +
+      '</tr></thead><tbody>' + rows.map((row) => '<tr>' +
+        row.map((c) => `<td>${escapeHtml(c)}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
+  }
+  function report(payload) {
+    const r = payload.result || {};
+    const stream = payload.stream || r.stream || {};
+    const params = tableHtml(payload.params || [], ['Параметр', 'Значение']);
+    const metrics = [
+      ['Фрактальная размерность D', r.D], ['Размерность блуждания h', r.h],
+      ['Стандартная ошибка dD', r.dD], ['Коэффициент детерминации R²', r.r2]
+    ];
+    const image = payload.image ? `<img src="${payload.image}" alt="Снимок/карта">` : '';
+    const plot = payload.plot ? `<img src="${payload.plot}" alt="График">` : '';
+    const streamRows = [
+      ['Средний многолетний расход', 'Qср, м³/с', stream.Q_mean],
+      ['Коэффициент вариации', 'Cv', stream.Cv],
+      ['Коэффициент асимметрии', 'Cs', stream.Cs]
+    ];
+    const win = window.open('', '_blank');
+    if (!win) throw new Error('Разрешите всплывающие окна для сохранения отчёта.');
+    win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8">
+      <title>Отчёт Гидрофрактал</title><style>
+      body{font-family:Arial,sans-serif;color:#3d2f22;margin:24px;line-height:1.45}
+      h1{color:#733933;font-size:22px}h2{color:#8B6431;font-size:15px;margin-top:22px}
+      table{border-collapse:collapse;width:100%;margin:8px 0 16px;font-size:11px}
+      th,td{border:1px solid #DACAB0;padding:5px 7px;text-align:left}
+      th{background:#9CA75A;color:#fff}img{max-width:100%;border:1px solid #DACAB0;margin:8px 0}
+      p{font-size:11px;color:#6b5238}@media print{body{margin:12mm}}
+      </style></head><body>
+      <h1>ОТЧЁТ О ФРАКТАЛЬНОЙ РАЗМЕРНОСТИ РЕКИ</h1>
+      <p>${escapeHtml(payload.title || 'Гидрофрактал — статическая версия')}<br>Дата: ${new Date().toLocaleString('ru-RU')}</p>
+      <h2>I. Исходные данные и параметры</h2>${params}
+      <h2>II. Результаты расчёта</h2>${tableHtml(metrics, ['Показатель', 'Значение'])}
+      ${plot}<p>Рисунок 1 — Зависимость log N(ε) от log(1/ε).</p>
+      <h2>III. Полная таблица измерений</h2>${tableHtml(payload.table || r.table, ['n', 'ε, px', 'N(ε)'])}
+      <h2>IV. Характеристики стока (оценка по D)</h2>${tableHtml(streamRows, ['Характеристика', 'Обозначение', 'Значение'])}
+      <p>Оценка ориентировочная: Cv = 2(D−1), Cs = 2Cv, распределение Пирсона III типа.</p>
+      ${image}<p>Исходные данные с результатами анализа.</p>
+      </body></html>`);
+    win.document.close();
+    setTimeout(() => { try { win.focus(); win.print(); } catch (e) { /* ignore */ } }, 500);
+    return Promise.resolve({ ok: true, printed: true });
+  }
+
+  // ------------------------------------------------------------------ API-шлюз
+  HF.dispatch = function (path, payload) {
+    const p = payload || {};
+    switch (path) {
+      case '/api/health':
+        return Promise.resolve({ ok: true, service: 'HydroFractal Web (static)' });
+      case '/api/upload':
+        return drawNormalizedImage(p.image, 1600).then((img) => ({
+          ok: true, image: img.canvas.toDataURL('image/jpeg', 0.88),
+          width: img.width, height: img.height
+        }));
+      case '/api/segment':
+        return drawNormalizedImage(p.image, 1600).then((rgb) => {
+          const seed = p.seed || {};
+          if (seed.x === undefined || seed.y === undefined) throw new Error('Сначала отметьте точку на реке.');
+          const mask = segmentWater(rgb, { x: Number(seed.x), y: Number(seed.y) }, p);
+          const W = rgb.width, H = rgb.height;
+          let count = 0;
+          for (let i = 0; i < mask.length; i++) count += mask[i];
+          const maskDataUrl = maskPngDataUrl(mask, W, H);
+          const { canvas, ctx } = canvasContext(W, H);
+          ctx.drawImage(rgb.canvas, 0, 0);
+          const tint = maskToImageData(mask, W, H, [40, 220, 80, 122], [0, 0, 0, 0]);
+          const layer = canvasContext(W, H);
+          layer.ctx.putImageData(tint, 0, 0);
+          ctx.drawImage(layer.canvas, 0, 0);
+          [[p.seed, '#FF3C3C'], ...(p.extras || []).map((x) => [x, '#F5CD46'])].forEach(([pt, color]) => {
+            if (!pt) return;
+            ctx.strokeStyle = color; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.arc(Number(pt.x), Number(pt.y), 9, 0, 2 * Math.PI); ctx.stroke();
+          });
+          return {
+            ok: true, image: rgb.canvas.toDataURL('image/jpeg', 0.88),
+            overlay: canvas.toDataURL('image/jpeg', 0.88), mask: maskDataUrl,
+            width: W, height: H, water_pixels: count,
+            water_share: Math.round(count / mask.length * 100000) / 1000
+          };
+        });
+      case '/api/analyze':
+        return maskFromDataUrl(p.mask).then(({ mask, W, H }) => {
+          let object = p.object || 'skeleton';
+          let working = mask;
+          if (object === 'skeleton') working = skeletonMask(mask, W, H);
+          else if (object === 'boundary') working = boundaryMask(mask, W, H);
+          const r = cantorDimension(working, W, H, p.max_divs || 60);
+          r.water_pixels = mask.reduce((a, b) => a + b, 0);
+          return { ok: true, result: cleanResult(r, object) };
+        });
+      case '/api/map/view':
+        return mapView(p);
+      case '/api/map/analyze':
+        return mapAnalyze(p);
+      default:
+        return Promise.reject(new Error('Неизвестный запрос: ' + path));
+    }
+  };
+  HF.download = function (path, payload, filename) {
+    const p = payload || {};
+    if (path === '/api/report') return report(p);
+    if (path === '/api/mask/png') {
+      return maskFromDataUrl(p.mask).then(({ mask, W, H }) => {
+        const seed = p.seed ? `${Math.round(p.seed.x)}, ${Math.round(p.seed.y)}` : 'not set';
+        const water = mask.reduce((a, b) => a + b, 0);
+        const { canvas: out, ctx: outCtx } = canvasContext(W, H);
+        outCtx.putImageData(maskToImageData(mask, W, H, [0, 0, 0, 255], [255, 255, 255, 255]), 0, 0);
+        const base = out.toDataURL('image/png');
+        const meta = {
+          Title: 'River mask', Dimensions: `${W} x ${H} px`, Resolution: '300 dpi',
+          Scale: p.scale_text ? `${p.scale_text} m/px` : 'not set',
+          Source: String(p.source_name || 'unknown'), 'Water pixels': String(water),
+          'Water share, pct': (100 * water / mask.length).toFixed(2),
+          'Seed point': seed, Created: new Date().toISOString(),
+          Software: 'HydroFractal Web (static)', Description: 'Black = water, white = background'
+        };
+        const url = pngWithMetadata(base, meta);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+        return { ok: true };
+      });
+    }
+    return Promise.reject(new Error('Скачивание недоступно в статическом режиме.'));
+  };
+
+  window.HFClient = HF;
+})();
