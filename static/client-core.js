@@ -1004,45 +1004,231 @@
       '</tr></thead><tbody>' + rows.map((row) => '<tr>' +
         row.map((c) => `<td>${escapeHtml(c)}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
   }
+  function invertMaskDataUrl(dataURL) {
+    if (!dataURL) return Promise.resolve(null);
+    return loadImage(dataURL).then((img) => {
+      const { canvas, ctx } = canvasContext(img.naturalWidth, img.naturalHeight);
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      for (let i = 0; i < d.data.length; i += 4) {
+        const v = d.data[i] > 127 ? 0 : 255;
+        d.data[i] = d.data[i + 1] = d.data[i + 2] = v;
+        d.data[i + 3] = 255;
+      }
+      ctx.putImageData(d, 0, 0);
+      return canvas.toDataURL('image/png');
+    }).catch(() => null);
+  }
+  function probabilityGrid() {
+    const W = 900, H = 470, x0 = 78, x1 = W - 24, y0 = 24, y1 = H - 52;
+    const zmin = normInv(0.001), zmax = normInv(0.999);
+    const xp = (p) => x0 + (normInv(p / 100) - zmin) / (zmax - zmin) * (x1 - x0);
+    const yp = (k) => y1 - k / 5.5 * (y1 - y0);
+    let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+      <rect x="${x0}" y="${y0}" width="${x1 - x0}" height="${y1 - y0}" fill="white" stroke="black" stroke-width="1"/>`;
+    for (let k = 0.2; k <= 5.4; k += 0.2) {
+      const major = Math.abs(k - Math.round(k)) < 1e-6;
+      const y = yp(k);
+      out += `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${major ? 'black' : '#b8b8b8'}" stroke-width="${major ? 0.8 : 0.35}"/>`;
+      if (major) {
+        out += `<line x1="${x0 - 6}" y1="${y}" x2="${x0}" y2="${y}" stroke="black" stroke-width="0.5"/>`;
+        out += `<text x="${x0 - 10}" y="${y + 4}" text-anchor="end" font-size="13" font-family="Times New Roman">${k}</text>`;
+      }
+    }
+    const MINOR_P = [0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9, 1.5, 3, 4, 6, 7, 8, 9,
+      15, 25, 35, 45, 55, 65, 75, 85, 92, 93, 94, 96, 97, 98.5,
+      99.2, 99.3, 99.4, 99.6, 99.7, 99.8];
+    MINOR_P.forEach((p) => {
+      const x = xp(p);
+      out += `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke="#b8b8b8" stroke-width="0.35"/>`;
+    });
+    MAJOR_P.forEach((p, i) => {
+      const x = xp(p);
+      out += `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke="black" stroke-width="${i === 0 || i === MAJOR_P.length - 1 ? 0.8 : 0.5}"/>`;
+      out += `<text x="${x}" y="${y1 + 14}" text-anchor="middle" font-size="11" font-family="Times New Roman">${String(p).replace('.', ',')}</text>`;
+    });
+    out += `<text x="${(x0 + x1) / 2}" y="${H - 8}" text-anchor="middle" font-size="14" font-family="Times New Roman">Обеспеченность P, %</text>
+      <text transform="translate(20,${(y0 + y1) / 2}) rotate(-90)" text-anchor="middle" font-size="14" font-family="Times New Roman">Модульный коэффициент K_P</text>
+      </svg>`;
+    return out;
+  }
   function report(payload) {
     const r = payload.result || {};
-    const stream = payload.stream || r.stream || {};
-    const params = tableHtml(payload.params || [], ['Параметр', 'Значение']);
-    const metrics = [
-      ['Фрактальная размерность D', r.D], ['Размерность блуждания h', r.h],
-      ['Стандартная ошибка dD', r.dD], ['Коэффициент детерминации R²', r.r2]
+    const stream = payload.stream || r.stream || streamStats(r.D || 1, r.dD || 0);
+    const fromParams = (label, fallback) => {
+      const row = (payload.params || []).find((p) => p[0] === label);
+      return row ? row[1] : fallback;
+    };
+    const ru = (v, n) => (v === undefined || v === null || Number.isNaN(Number(v))
+      ? '—' : Number(v).toFixed(n === undefined ? 3 : n).replace('.', ','));
+    const w = payload.width || fromParams('Размер снимка', '—');
+    const seed = payload.seed;
+    const seedText = seed
+      ? `x = ${Math.round(seed.x)}, y = ${Math.round(seed.y)}` +
+        (payload.seed_rgb ? ` (RGB = ${payload.seed_rgb.join(', ')})` : '')
+      : 'не отмечена';
+    const extras = payload.color_pts || [];
+    const methodText = { color: 'по цвету точки (HSV)', dark: 'тёмная вода (яркость)',
+      hybrid: 'комбинация признаков' }[payload.method] || 'по цвету точки (HSV)';
+    const objectText = { skeleton: 'скелет (центр русла)', boundary: 'граница воды (контур)',
+      mask: 'заполненная маска' }[payload.object] || 'скелет (центр русла)';
+    const water = r.water_pixels || 0;
+    const waterPct = (payload.width && payload.height)
+      ? 100 * water / (payload.width * payload.height) : 0;
+    const table1 = [
+      ['Файл', payload.source_name || fromParams('Источник', '—')],
+      ['Размер снимка', `${w} px`],
+      ['Точка расхода (створ)', seedText],
+      ['Доп. точки цвета', extras.length ? `${extras.length} шт.: ` +
+        extras.map((p) => `x=${Math.round(p.x)}, y=${Math.round(p.y)}`).join(', ') : 'нет'],
+      ['Способ выделения', `${methodText}; допуск = ${payload.tol === undefined ? '—' : payload.tol}`],
+      ['Объект расчёта', objectText],
+      ['Максимальное число делений сетки', `${payload.max_divs || r.n_divs_used || '—'} (шаг n += 1)`],
+      ['Пикселей воды', `${water} (${ru(waterPct, 2)} % кадра)`],
+      ['Маска', payload.mask_touched ? 'отредактирована вручную (ластик/кисть)' : 'автоматическая сегментация']
     ];
-    const image = payload.image ? `<img src="${payload.image}" alt="Снимок/карта">` : '';
-    const plot = payload.plot ? `<img src="${payload.plot}" alt="График">` : '';
-    const streamRows = [
-      ['Средний многолетний расход', 'Qср, м³/с', stream.Q_mean],
-      ['Коэффициент вариации', 'Cv', stream.Cv],
-      ['Коэффициент асимметрии', 'Cs', stream.Cs]
+    const r2 = Number(r.r2 || 0), corr = Math.sqrt(r2);
+    const rows3 = (r.table || []).map((row) => [
+      row[0], ru(row[1], 1), String(row[2]),
+      ru(Math.log10(1 / Number(row[1])), 3), ru(Math.log10(Number(row[2])), 3)
+    ]);
+    const relQ = stream.rel_err_Q || 0, relCv = stream.rel_err_Cv || 0, relCs = stream.rel_err_Cs || 0;
+    const rows4 = [
+      ['Средний многолетний расход воды, м³/с', 'Qср', ru(stream.Q_mean, 2), ru(relQ, 1), '± ' + ru(stream.Q_mean * relQ / 100, 2)],
+      ['Коэффициент вариации', 'Cv', ru(stream.Cv, 3), ru(relCv, 1), '± ' + ru(stream.Cv * relCv / 100, 3)],
+      ['Коэффициент асимметрии', 'Cs', ru(stream.Cs, 3), ru(relCs, 1), '± ' + ru(stream.Cs * relCs / 100, 3)]
     ];
-    const win = window.open('', '_blank');
-    if (!win) throw new Error('Разрешите всплывающие окна для сохранения отчёта.');
-    win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8">
-      <title>Отчёт Гидрофрактал</title><style>
-      body{font-family:Arial,sans-serif;color:#3d2f22;margin:24px;line-height:1.45}
-      h1{color:#733933;font-size:22px}h2{color:#8B6431;font-size:15px;margin-top:22px}
-      table{border-collapse:collapse;width:100%;margin:8px 0 16px;font-size:11px}
-      th,td{border:1px solid #DACAB0;padding:5px 7px;text-align:left}
-      th{background:#9CA75A;color:#fff}img{max-width:100%;border:1px solid #DACAB0;margin:8px 0}
-      p{font-size:11px;color:#6b5238}@media print{body{margin:12mm}}
-      </style></head><body>
-      <h1>ОТЧЁТ О ФРАКТАЛЬНОЙ РАЗМЕРНОСТИ РЕКИ</h1>
-      <p>${escapeHtml(payload.title || 'Гидрофрактал — статическая версия')}<br>Дата: ${new Date().toLocaleString('ru-RU')}</p>
-      <h2>I. Исходные данные и параметры</h2>${params}
-      <h2>II. Результаты расчёта</h2>${tableHtml(metrics, ['Показатель', 'Значение'])}
-      ${plot}<p>Рисунок 1 — Зависимость log N(ε) от log(1/ε).</p>
-      <h2>III. Полная таблица измерений</h2>${tableHtml(payload.table || r.table, ['n', 'ε, px', 'N(ε)'])}
-      <h2>IV. Характеристики стока (оценка по D)</h2>${tableHtml(streamRows, ['Характеристика', 'Обозначение', 'Значение'])}
-      <p>Оценка ориентировочная: Cv = 2(D−1), Cs = 2Cv, распределение Пирсона III типа.</p>
-      ${image}<p>Исходные данные с результатами анализа.</p>
-      </body></html>`);
-    win.document.close();
-    setTimeout(() => { try { win.focus(); win.print(); } catch (e) { /* ignore */ } }, 500);
-    return Promise.resolve({ ok: true, printed: true });
+    const rows5 = (stream.qp || []).map((p) => [
+      String(p.p).replace('.', ','), ru(p.k, 2), ru(p.q, 1)
+    ]);
+    const tbl = (caption, head, rows, cls) => `<div class="tbl-cap">${escapeHtml(caption)}</div>
+      <table class="${cls || ''}"><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map((row) => '<tr>' + row.map((c) => `<td>${escapeHtml(c)}</td>`).join('') + '</tr>').join('')}</tbody></table>`;
+    return invertMaskDataUrl(payload.mask).then((maskImg) => {
+      const win = window.open('', '_blank');
+      if (!win) throw new Error('Разрешите всплывающие окна для сохранения отчёта.');
+      const img = (src, cap) => src ? `<div class="figure"><img src="${src}" alt=""><div class="fig-cap">${cap}</div></div>` : '';
+      win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8">
+        <title>Отчёт Гидрофрактал</title><style>
+        @page { size: A4; margin: 2cm 1.5cm 2cm 3cm; @bottom-center { content: counter(page); font-family: "Times New Roman"; font-size: 12pt; } }
+        @page wide { size: A4 landscape; margin: 2cm; }
+        body { font-family: "Times New Roman", Times, serif; font-size: 14pt; line-height: 1.5; color: #000; margin: 0; }
+        h1 { font-size: 16pt; line-height: 1.35; text-align: center; margin: 0 0 6pt; font-weight: bold; }
+        .sub { font-size: 10pt; color: #555; text-align: center; margin-bottom: 12pt; }
+        h2 { font-size: 14pt; margin: 10pt 0 8pt; font-weight: bold; }
+        p { text-align: justify; text-indent: 1.25cm; margin: 0 0 8pt; }
+        p.noind { text-indent: 0; }
+        .formula { text-align: center; text-indent: 0; margin: 2pt 0; }
+        .num { float: right; }
+        .tbl-cap { text-align: right; font-size: 14pt; margin: 4pt 0; }
+        table { border-collapse: collapse; width: 100%; font-size: 12pt; margin-bottom: 8pt; }
+        th, td { border: 1px solid #000; padding: 3pt 6pt; vertical-align: middle; }
+        th { background: #eee; font-weight: bold; }
+        td { text-align: center; }
+        table.t1 td:first-child, table.t4 td:first-child { text-align: left; }
+        .note { font-size: 10pt; color: #555; text-align: justify; text-indent: 0; }
+        .figure { text-align: center; margin: 6pt 0; }
+        .figure img { max-width: 100%; max-height: 15cm; }
+        .fig-cap { text-align: center; margin-top: 4pt; font-size: 14pt; }
+        .page { page-break-after: always; }
+        .page:last-child { page-break-after: auto; }
+        .wide { page: wide; page-break-before: always; }
+        .wide svg { width: 100%; height: auto; }
+        @media screen { body { max-width: 21cm; margin: 1cm auto; } .page { border-bottom: 1px dashed #bbb; padding-bottom: 12pt; } }
+        </style></head><body>
+        <div class="page">
+          <h1>Отчёт о значениях фрактальной размерности, среднего многолетнего расхода воды,
+          коэффициента вариации, коэффициента асимметрии и кривой обеспеченности для выбранного створа реки</h1>
+          <div class="sub">Метод Кантора (квадраты) &nbsp;·&nbsp; создан ${new Date().toLocaleString('ru-RU')}</div>
+          <p>В отчёте приведены результаты измерения фрактальной размерности реки по спутниковому снимку
+          «${escapeHtml(payload.source_name || fromParams('Источник', '—'))}». Измерение выполнено методом Кантора (квадраты);
+          связь размерности блуждания h с фрактальной размерностью D задаётся формулой:</p>
+          <p class="formula">N ~ (1/ε)<sup>h</sup> <span class="num">(1)</span></p>
+          <p>где ε — сторона ячейки сетки, N(ε) — число ячеек, по которым проходит линия реки.</p>
+          <p class="formula">h = 2(D − 1), &nbsp;&nbsp; D = 1 + h/2 <span class="num">(2)</span></p>
+          <p>Наклон прямой в координатах «log<sub>10</sub> N(ε) — log<sub>10</sub> (1/ε)» оценивается
+          методом наименьших квадратов по всем делениям сетки от 1 до максимального.</p>
+          <h2>I. Исходные данные и параметры расчёта</h2>
+          ${tbl('Таблица 1 — Параметры расчёта', ['Параметр', 'Значение'], table1, 't1')}
+        </div>
+        <div class="page">
+          <h2>II. Результаты измерения фрактальной размерности</h2>
+          ${tbl('Таблица 2 — Результаты измерения', ['Показатель', 'Значение'], [
+            ['Размерность блуждания', `h = ${ru(r.h, 4)} ± ${ru(r.dh, 4)}`],
+            ['Фрактальная размерность', `D = 1 + h/2 = ${ru(r.D, 4)} ± ${ru(r.dD, 4)}`],
+            ['R² (коэффициент детерминации)', `R² = ${ru(r2, 10)}`],
+            ['Коэффициент корреляции (r = √R²)', `r = ${ru(corr, 10)}`]
+          ])}
+          <p class="note">R² = 1,0 соответствует идеальной прямой в логарифмических координатах;
+          погрешность D получена из ошибки наклона h (метод наименьших квадратов).</p>
+          ${img(payload.plot || r.plot, 'Рисунок 1 — Зависимость log<sub>10</sub> N(ε) от log<sub>10</sub> (1/ε)')}
+          <p class="noind" style="text-align:center;text-indent:0">h = ${ru(r.h, 4)}, &nbsp; D = ${ru(r.D, 4)}, &nbsp; R² = ${ru(r2, 10)}</p>
+        </div>
+        <div class="page">
+          <h2>III. Полная таблица измерений</h2>
+          <p>Ниже представлены результаты обмера маски реки сеткой: для каждого деления сетки указаны
+          сторона ячейки ε в пикселях, число ячеек N(ε), через которые проходит линия реки, и их
+          десятичные логарифмы, по которым строится прямая рисунка 1.</p>
+          ${tbl('Таблица 3 — Полная таблица измерений', ['n', 'ε, px', 'N(ε)', 'log<sub>10</sub> (1/ε)', 'log<sub>10</sub> N(ε)'], rows3)}
+          <p class="note">Пояснение: n — номер деления сетки; ε — сторона ячейки, px; N(ε) — число ячеек,
+          через которые проходит линия реки; log<sub>10</sub>(1/ε) и log<sub>10</sub> N(ε) — десятичные логарифмы.</p>
+        </div>
+        <div class="page">
+          <h2>IV. Снимок с выделенной маской и маска реки</h2>
+          ${img(payload.image, 'Рисунок 2 — Снимок с выделенной маской воды (зелёный) и точкой расхода (створ, маркер «1»)')}
+        </div>
+        <div class="page">
+          ${img(maskImg, 'Рисунок 3 — Маска реки (чёрный — вода, белый — фон)')}
+        </div>
+        <div class="page">
+          <h2>V. Статистические характеристики стока</h2>
+          <p>В таблице ниже представлены статистические характеристики стока для данного створа,
+          определённые по фрактальной размерности.</p>
+          ${tbl('Таблица 4 — Статистические характеристики стока',
+            ['Характеристика', 'Обозначение', 'Значение', 'Относительная погрешность', 'Абсолютная погрешность'], rows4, 't4')}
+          <p class="note">Характеристики определены по фрактальной размерности D (калибровочная связь);
+          относительная погрешность указана в долях процента.</p>
+          <p class="noind">а) абсолютные погрешности</p>
+          <p>• для среднего значения: ε<sub>Q</sub> = σ<sub>Q</sub> / n<sup>1/2</sup> <span class="num">(3)</span></p>
+          <p>• для коэффициента вариации: ε<sub>Cv</sub> = Cv / n · ((n + 4Cv²) / (2(1 + Cv²)))<sup>1/2</sup> <span class="num">(4)</span></p>
+          <p>• для коэффициента асимметрии: ε<sub>Cs</sub> = (6/n)<sup>1/2</sup>(1 + 6Cv² + 5Cv<sup>4</sup>)<sup>1/2</sup> <span class="num">(5)</span></p>
+          <p class="noind">б) относительные погрешности</p>
+          <p>• ε<sub>Q, %</sub> = Cv / n<sup>1/2</sup> · 100 % <span class="num">(6)</span></p>
+          <p>• ε<sub>Cv, %</sub> = 1/n · ((n + 4Cv²) / (2(1 + Cv²)))<sup>1/2</sup> · 100 % <span class="num">(7)</span></p>
+          <p>• ε<sub>Cs, %</sub> = (1/Cs)(6/n)<sup>1/2</sup>(1 + 6Cv² + 5Cv<sup>4</sup>)<sup>1/2</sup> · 100 % <span class="num">(8)</span></p>
+        </div>
+        <div class="page wide">
+          <h2>VI. Теоретическая кривая обеспеченности (Пирсона III типа)</h2>
+          <div class="figure">${probabilityGrid()}
+          <div class="fig-cap">Рисунок 4 — Теоретическая кривая обеспеченности (Пирсона III типа):
+          P, % — модульный коэффициент K<sub>P</sub></div></div>
+        </div>
+        <div class="page">
+          <h2>VII. Расчёт ординат теоретической кривой обеспеченности</h2>
+          <p>В таблице 5 приведены ординаты теоретической кривой: обеспеченность P, модульные
+          коэффициенты K<sub>P</sub> и соответствующие расходы воды Q<sub>P</sub>.</p>
+          ${tbl('Таблица 5 — Ординаты теоретической кривой',
+            ['Обеспеченность P, %', 'Модульный коэффициент K<sub>P</sub>', 'Расход воды Q<sub>P</sub>, м³/с'], rows5)}
+        </div>
+        <div class="page">
+          <h2>Порядок вычисления</h2>
+          <p>Теоретическая кривая строится по трём характеристикам стока — Q<sub>ср</sub>, C<sub>v</sub> и C<sub>s</sub>.
+          Расход воды обеспеченности P вычисляется по формуле</p>
+          <p class="formula">Q<sub>P</sub> = (Φ<sub>P</sub>·C<sub>v</sub> + 1)·Q<sub>ср</sub> = K<sub>P</sub>·Q<sub>ср</sub> <span class="num">(9)</span></p>
+          <p>где Φ<sub>P</sub> — коэффициент Фостера–Рыбкина, зависящий от обеспеченности P и коэффициента асимметрии C<sub>s</sub></p>
+          <p class="formula">Φ<sub>P</sub> = z<sub>P</sub> + (C<sub>s</sub>/6)·(z<sub>P</sub>² − 1) <span class="num">(10)</span></p>
+          <p>а K<sub>P</sub> — модульный коэффициент, показывающий, во сколько раз расход обеспеченности P
+          отличается от Q<sub>ср</sub></p>
+          <p class="formula">K<sub>P</sub> = Φ<sub>P</sub>·C<sub>v</sub> + 1 <span class="num">(11)</span></p>
+          <p>В формулах (10) и (11) z<sub>P</sub> — квантиль стандартного нормального распределения
+          для обеспеченности P; значения Φ<sub>P</sub> определяются по стандартным таблицам
+          (например, СП 33-101-2003).</p>
+        </div>
+        </body></html>`);
+      win.document.close();
+      setTimeout(() => { try { win.focus(); win.print(); } catch (e) { /* ignore */ } }, 600);
+      return { ok: true, printed: true };
+    });
   }
 
   // ------------------------------------------------------------------ API-шлюз

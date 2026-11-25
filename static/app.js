@@ -39,6 +39,7 @@
     zoom: 1, cx: 0, cy: 0, fit: 1,
     undo: [], redo: [], painting: false, panning: false, lastPaint: null, lastPointer: null,
     result: null, waterPixels: 0, waterShare: 0, minimapVisible: false, maskNonEmpty: false,
+    overlayDataURL: null, maskTouched: false,
     mapTabLoaded: false, activeTab: 'photo',
     map: {
       lon: 41.70, lat: 43.50, zoom: 11, source: 'esri', relief: false,
@@ -226,7 +227,7 @@
     if (!S.image) { toast('Сначала загрузите снимок.'); return; }
     pushUndo();
     maskCtx.clearRect(0, 0, S.W, S.H);
-    S.maskNonEmpty = false;
+    S.maskNonEmpty = false; S.maskTouched = true;
     renderPhoto();
     status('Маска очищена. Нажмите «Рассчитать D», чтобы обновить результат.');
   }
@@ -360,6 +361,7 @@
     maskCtx.beginPath(); maskCtx.arc(pt.x, pt.y, r, 0, 2 * Math.PI); maskCtx.fill();
     maskCtx.restore();
     if (!eraser) S.maskNonEmpty = true;
+    S.maskTouched = true;
   }
   function paintLine(a, b) {
     const dist = Math.hypot(b.x - a.x, b.y - a.y);
@@ -442,6 +444,7 @@
     S.sourceName = name || 'screenshot.png';
     initMask(S.W, S.H);
     S.seed = null; S.colorPoints = []; S.result = null; S.waterPixels = 0; S.waterShare = 0;
+    S.overlayDataURL = null; S.maskTouched = false;
     S.undo.length = 0; S.redo.length = 0; updateHistoryButtons();
     resetView();
     el.report.textContent = INITIAL_REPORT;
@@ -475,6 +478,8 @@
         keep_largest: $('largest').checked
       });
       S.baseDataURL = resp.image;
+      S.overlayDataURL = resp.overlay;
+      S.maskTouched = false;
       await setMaskFromDataURL(resp.mask);
       S.waterPixels = resp.water_pixels;
       S.waterShare = resp.water_share;
@@ -544,9 +549,29 @@
     b.textContent = text;
     b.className = 'badge' + (kind ? ' ' + kind : '');
   }
+  function seedRgbAt(point) {
+    if (!point || !S.image) return null;
+    const c = document.createElement('canvas');
+    c.width = S.W; c.height = S.H;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(S.image, 0, 0);
+    const x = clamp(Math.round(point.x), 0, S.W - 1);
+    const y = clamp(Math.round(point.y), 0, S.H - 1);
+    const d = ctx.getImageData(x, y, 1, 1).data;
+    return [d[0], d[1], d[2]];
+  }
   function photoReportPayload() {
     return {
       title: 'Анализ фрактальной размерности по спутниковому снимку',
+      source_name: S.sourceName,
+      width: S.W, height: S.H,
+      seed: S.seed, seed_rgb: seedRgbAt(S.seed),
+      color_pts: S.colorPoints,
+      method: $('method').value, tol: Number($('tolNum').value),
+      object: $('object').value, max_divs: Number($('maxDivsNum').value),
+      mask_touched: S.maskTouched,
+      scale_text: $('scaleText').value,
+      mask: hasMask() ? maskForApi() : null,
       params: [
         ['Источник', S.sourceName],
         ['Размер снимка', `${S.W} × ${S.H} px`],
@@ -561,7 +586,7 @@
       ],
       result: S.result || {}, table: S.result ? S.result.table : [],
       stream: S.result ? S.result.stream : {}, plot: S.result ? S.result.plot : null,
-      image: S.view === 'mask' ? null : S.baseDataURL
+      image: S.overlayDataURL || S.baseDataURL
     };
   }
   async function saveMask() {
@@ -809,6 +834,8 @@
     try {
       await download('/api/report', {
         title: 'Анализ реки по карте и рельефу',
+        source_name: 'карта и водосбор', method: 'color', tol: 0,
+        object: 'skeleton', max_divs: 60, color_pts: [], mask_touched: false,
         params: [
           ['Источник карты', S.map.source === 'esri' ? 'Esri World Imagery' : 'OpenTopoMap'],
           ['Рельеф', S.map.relief ? 'отмывка включена' : 'не показывалась'],
