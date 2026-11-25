@@ -46,7 +46,7 @@
     result: null, waterPixels: 0, waterShare: 0, minimapVisible: false, maskNonEmpty: false,
     overlayDataURL: null, maskTouched: false, cropped: false,
     crop: { active: false, start: null, end: null, ready: false, handle: null, dragOrigin: null },
-    photoMarks: [], photoMarkMode: false,
+    photoMarks: [], photoMarkMode: false, photoMarkColor: '#5F0001',
     mapTabLoaded: false, activeTab: 'photo',
     map: {
       lon: 30.33510, lat: 59.93428, zoom: 11, source: 'sentinel', relief: false,
@@ -324,6 +324,7 @@
     box.innerHTML = S.photoMarks.map((m, i) => `
       <div class="mark-row" data-photo-mark="${i}">
         <span class="mark-num">M${i + 1}.</span>
+        <input type="color" class="mark-color" value="${m.color || '#5F0001'}" title="Цвет метки M${i + 1}" aria-label="Цвет метки M${i + 1}">
         <input type="text" class="mark-name" value="${escHtml(m.label)}" aria-label="Название метки ${i + 1}">
         <span class="mark-coord">x=${Math.round(m.x)}, y=${Math.round(m.y)} px</span>
         <button class="btn small" data-mark-act="rename">Сохранить</button>
@@ -333,12 +334,13 @@
   }
   function addPhotoMark(pt) {
     const label = ($('photoMarkLabel').value || '').trim() || `Метка ${S.photoMarks.length + 1}`;
-    S.photoMarks.push({ x: pt.x, y: pt.y, label });
+    S.photoMarks.push({ x: pt.x, y: pt.y, label, color: S.photoMarkColor });
     $('photoMarkLabel').value = '';
     renderPhotoMarksList(); renderPhoto();
     status(`Метка на фото «${label}»: x=${Math.round(pt.x)}, y=${Math.round(pt.y)} px.`);
   }
   function togglePhotoMark() {
+    S.photoMarkColor = ($('photoMarkColor') && $('photoMarkColor').value) || S.photoMarkColor;
     S.photoMarkMode = !S.photoMarkMode;
     $('btnPhotoMark').classList.toggle('selected-accent', S.photoMarkMode);
     status(S.photoMarkMode
@@ -362,7 +364,7 @@
     };
     S.colorPoints.forEach((p, i) => marker(p, '#F5CD46', String(i + 2)));
     if (S.seed) marker(S.seed, '#FF3C3C', '1');
-    S.photoMarks.forEach((m, i) => marker(m, '#5F0001', `M${i + 1} ${m.label}`));
+    S.photoMarks.forEach((m, i) => marker(m, m.color || '#5F0001', `M${i + 1} ${m.label}`));
   }
   function renderPhoto() {
     const { ctx, w, h } = prepCanvas(el.photoCanvas);
@@ -813,7 +815,7 @@
       width: S.W, height: S.H,
       seed: S.seed, seed_rgb: seedRgbAt(S.seed),
       color_pts: S.colorPoints,
-      photo_marks: S.photoMarks.map((m) => ({ x: Math.round(m.x), y: Math.round(m.y), label: m.label })),
+      photo_marks: S.photoMarks.map((m) => ({ x: Math.round(m.x), y: Math.round(m.y), label: m.label, color: m.color || '#5F0001' })),
       method: $('method').value, tol: Number($('tolNum').value),
       object: $('object').value, max_divs: Number($('maxDivsNum').value),
       mask_touched: S.maskTouched,
@@ -1251,7 +1253,7 @@
     S.map.marks.forEach((m, i) => {
       const marker = L.circleMarker([m.lat, m.lon], {
         radius: 10, color: '#ffffff', weight: 2,
-        fillColor: '#5F0001', fillOpacity: 1
+        fillColor: m.color || '#5F0001', fillOpacity: 1
       });
       marker.bindTooltip(`${i + 2}. ${m.label}`, {
         permanent: true, direction: 'right', offset: [12, 0], className: 'hf-mark-tip'
@@ -1272,6 +1274,7 @@
     box.innerHTML = S.map.marks.map((m, i) => `
       <div class="mark-row" data-mark="${i}">
         <span class="mark-num">${i + 2}.</span>
+        <input type="color" class="mark-color" value="${m.color || '#5F0001'}" title="Цвет метки ${i + 2}" aria-label="Цвет метки ${i + 2}">
         <input type="text" class="mark-name" value="${escHtml(m.label)}" aria-label="Название метки ${i + 2}">
         <span class="mark-coord">${fmt(m.lat, 5)}° N, ${fmt(m.lon, 5)}° E</span>
         <button class="btn small" data-mark-act="rename">Сохранить</button>
@@ -1284,7 +1287,7 @@
       : ((el.mapMarkText && el.mapMarkText.value || '').trim());
     const n = S.map.marks.length;
     const label = raw || `Метка ${n + 1}`;
-    S.map.marks.push({ lat, lon, label });
+    S.map.marks.push({ lat, lon, label, color: '#5F0001' });
     if (el.mapMarkText && labelOverride === undefined) el.mapMarkText.value = '';
     rebuildMarkLayer();
     renderMarksList();
@@ -1323,6 +1326,8 @@
     const value = input ? input.value.trim() : '';
     if (!value) { toast('Введите название метки.'); return; }
     m.label = value;
+    const color = document.querySelector(`.mark-row[data-mark="${i}"] .mark-color`);
+    if (color) m.color = color.value;
     rebuildMarkLayer(); renderMarksList(); renderMap();
     status(`Метка переименована: «${value}».`);
   }
@@ -1758,7 +1763,7 @@
           zoom: S.map.zoom,
           m_per_px: 156543.03392 * Math.cos(S.map.lat * Math.PI / 180) / Math.pow(2, S.map.zoom)
         },
-        marks: S.map.marks.map((m) => ({ lat: m.lat, lon: m.lon, label: m.label }))
+        marks: S.map.marks.map((m) => ({ lat: m.lat, lon: m.lon, label: m.label, color: m.color || '#5F0001' }))
       }, 'gidrofraktal-map-report.pdf');
       status('PDF-отчёт по карте сохранён.');
     } catch (e) { status(e.message, true); toast(e.message); }
@@ -1839,6 +1844,8 @@
       if (act === 'rename') {
         const input = row.querySelector('.mark-name');
         if (input && input.value.trim()) { S.photoMarks[i].label = input.value.trim(); }
+        const color = row.querySelector('.mark-color');
+        if (color) S.photoMarks[i].color = color.value;
       } else if (act === 'delete') S.photoMarks.splice(i, 1);
       else if (act === 'goto') {
         const m = S.photoMarks[i];
@@ -1846,6 +1853,14 @@
       }
       renderPhotoMarksList(); renderPhoto();
     });
+    $('photoMarksList').addEventListener('input', (e) => {
+      if (!e.target.classList.contains('mark-color')) return;
+      const row = e.target.closest('.mark-row');
+      if (!row) return;
+      const m = S.photoMarks[Number(row.dataset.photoMark)];
+      if (m) { m.color = e.target.value; renderPhoto(); }
+    });
+    $('photoMarkColor').addEventListener('input', (e) => { S.photoMarkColor = e.target.value; });
     $('btnPhotoDraw').addEventListener('click', () => {
       $('tool').value = 'brush'; S.tool = 'brush'; setStatusForTool(); renderPhoto();
       status('Кисть включена: рисуйте выделение воды прямо на снимке.');
@@ -2028,6 +2043,13 @@
       if (act === 'rename') renameMapMark(i);
       else if (act === 'delete') deleteMapMark(i);
       else if (act === 'goto') gotoMapMark(i);
+    });
+    $('marksList').addEventListener('input', (e) => {
+      if (!e.target.classList.contains('mark-color')) return;
+      const row = e.target.closest('.mark-row');
+      if (!row) return;
+      const m = S.map.marks[Number(row.dataset.mark)];
+      if (m) { m.color = e.target.value; rebuildMarkLayer(); renderMap(); }
     });
     $('btnNdwi').addEventListener('click', toggleNdwiLayer);
     $('btnWaterSelect').addEventListener('click', selectWaterObjects);
@@ -2580,6 +2602,7 @@ N(ε) на малых размерах ячеек и завышают D.
     btnCropCancel: 'Отменить правку обрезки: снимок останется прежним.',
     btnPhotoMark: 'Режим меток на фото: кликните по снимку, чтобы поставить подписанную метку.',
     photoMarkLabel: 'Подпись следующей метки на фото.',
+    photoMarkColor: 'Цвет новых меток на фото; цвет любой метки можно изменить в списке справа.',
     btnPhotoDraw: 'Кисть маски: дорисовывает выделение воды на снимке; ластик удаляет лишнее.',
     mapViewMode: 'Что показывать после построения водосбора: подложку вместе с маской, только спутник или только маску водосбора и речной сети.',
     markLat: 'Широта новой метки в градусах (−85…85).',

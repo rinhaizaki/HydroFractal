@@ -11,7 +11,7 @@
       /[?&]static=1/.test(location.search);
   </script>
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css?v=1">
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=10">
 </head>
 <body>
 <div class="app-shell">
@@ -79,6 +79,15 @@
     </div>
   </header>
 
+  <!-- ========================== ВКЛАДКИ ========================== -->
+  <main class="main">
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="photo" role="tab" aria-selected="true">📷 Фотоснимок</button>
+      <button class="tab" data-tab="map" role="tab" aria-selected="false">🗺 Карта и водосбор</button>
+    </div>
+
+    <!-- ---------- вкладка «Фотоснимок» ---------- -->
+    <section class="panel active" id="panel-photo" role="tabpanel">
   <!-- ======================== ИНСТРУМЕНТЫ ======================== -->
   <div class="toolbars">
     <details class="tool-group" open>
@@ -151,21 +160,13 @@
     </details>
   </div>
 
-  <!-- ========================== ВКЛАДКИ ========================== -->
-  <main class="main">
-    <div class="tabs" role="tablist">
-      <button class="tab active" data-tab="photo" role="tab" aria-selected="true">📷 Фотоснимок</button>
-      <button class="tab" data-tab="map" role="tab" aria-selected="false">🗺 Карта и водосбор</button>
-    </div>
-
-    <!-- ---------- вкладка «Фотоснимок» ---------- -->
-    <section class="panel active" id="panel-photo" role="tabpanel">
       <div class="workspace">
         <div class="work-left">
           <div class="action-row">
             <button class="btn accent" id="btnSegment">🌊 Выделить реку</button>
             <button class="btn accent" id="btnAnalyze">📐 Рассчитать D</button>
             <input type="text" id="photoMarkLabel" class="mark-label" placeholder="Подпись метки на фото" size="14" title="Подпись для следующей метки на фото">
+            <input type="color" id="photoMarkColor" value="#5F0001" title="Цвет новых меток на фото">
             <button class="btn small" id="btnPhotoMark" title="Режим меток на фото: кликните по снимку, чтобы поставить метку">📌 Метка на фото</button>
             <label class="field-label" for="viewMode">Вид:</label>
             <select id="viewMode" class="select">
@@ -180,10 +181,6 @@
             Важно: оставьте выделенной только ту часть реки, которая <b>ВЫШЕ створа</b>
             (точка 1). Всё ниже по течению сотрите «🧹 Ластиком» — иначе расчёт D будет неверным.
           </p>
-          <div class="marks-panel" id="photoMarksPanel">
-            <div class="marks-head">Метки на фото <span class="note">— переименуйте, удалите или перейдите к точке</span></div>
-            <div id="photoMarksList"></div>
-          </div>
           <div class="canvas-wrap" id="photoWrap">
             <canvas id="photoCanvas"></canvas>
             <div class="placeholder" id="photoPlaceholder">
@@ -207,6 +204,10 @@
         </div>
 
         <aside class="results">
+          <div class="marks-panel" id="photoMarksPanel">
+            <div class="marks-head">Метки на фото <span class="note">— цвет, название и переход к точке</span></div>
+            <div id="photoMarksList"></div>
+          </div>
           <div class="results-head">
             <h2>Результаты</h2>
             <span class="badge" id="resultBadge">ожидание</span>
@@ -386,7 +387,7 @@
 <div class="toast" id="toast" hidden></div>
 
 <script src="vendor/leaflet/leaflet.js?v=1"></script>
-<script src="client-core.js?v=13"></script>
-<script src="app.js?v=16"></script>
+<script src="client-core.js?v=14"></script>
+<script src="app.js?v=17"></script>
 </body>
 </html>
