@@ -288,7 +288,7 @@ D = 1 + h/2
 ### 7.4. Карта и рельеф
 
 - Тайлы: `Sentinel-2 L2A` через STAC + item tiles Planetary Computer → `Esri` → `Google Satellite`; OpenTopoMap отключён.
-- DEM: загруженный пользователем GeoTIFF с EarthExplorer (приоритет, `/api/dem/upload`), затем `nasadem` (USGS EarthExplorer/SRTM) через Planetary Computer, резервы — `cop-dem-glo-30`, Terrarium; кэш с sidecar-метаданными
+- DEM: `nasadem` (USGS EarthExplorer/SRTM) через Planetary Computer, резервы — `cop-dem-glo-30`, Terrarium; кэш с sidecar-метаданными
   `collections/cop-dem-glo-30/items/Copernicus_DSM_COG_10_N{lat}_00_E{lon}_00_DEM/tiles/...`,
   шкала −1000…4000 м.
 - При недоступности сети включается `core/offline_map.py` / `syntheticDem`.
