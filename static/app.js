@@ -44,7 +44,8 @@
       lon: 41.70, lat: 43.50, zoom: 11, source: 'esri', relief: false,
       img: null, geo: null, outlet: null, result: null, info: null,
       credit: 'Карта: Esri · Рельеф: AWS Terrain Tiles', demo: false, cell: 0,
-      panDx: 0, panDy: 0, dragStart: null, moved: false, loading: false
+      panDx: 0, panDy: 0, dragStart: null, moved: false, loading: false,
+      tiles: [], reliefImg: null, overlayImg: null, reportImage: null
     }
   };
 
@@ -654,6 +655,22 @@
     if (!S.map.img) return;
     ctx.drawImage(S.map.img, S.map.panDx, S.map.panDy, w, h);
     const geo = S.map.geo;
+    if (geo) {
+      const sx = w / geo.w, sy = h / geo.h;
+      // настоящие спутниковые/топо-тайлы: <img> загружаются без CORS
+      (S.map.tiles || []).forEach((t) => {
+        ctx.drawImage(t.img, S.map.panDx + t.px * sx, S.map.panDy + t.py * sy,
+          256 * sx, 256 * sy);
+      });
+      if (S.map.reliefImg) {
+        ctx.globalAlpha = 0.55;
+        ctx.drawImage(S.map.reliefImg, S.map.panDx, S.map.panDy, w, h);
+        ctx.globalAlpha = 1;
+      }
+      if (S.map.overlayImg) {
+        ctx.drawImage(S.map.overlayImg, S.map.panDx, S.map.panDy, w, h);
+      }
+    }
     if (geo && S.map.outlet) {
       const t = tileXY(S.map.outlet.lon, S.map.outlet.lat, geo.z);
       const px = ((t.x - geo.x0) * 256) * el.mapCanvas.clientWidth / geo.w + S.map.panDx;
@@ -691,11 +708,22 @@
       S.map.credit = resp.credit;
       S.map.cell = resp.cell_m;
       S.map.demo = !!resp.demo;
+      S.map.tiles = resp.tiles || [];
+      S.map.overlayImg = null;
+      S.map.reportImage = null;
+      S.map.reliefImg = null;
       S.map.panDx = S.map.panDy = 0;
+      if (resp.relief) {
+        loadImage(resp.relief).then((relief) => { S.map.reliefImg = relief; renderMap(); });
+      }
       el.mapPlaceholder.hidden = true;
       renderMap();
       updateMapCoords();
-      if (!quiet) status('Карта обновлена. Кликните по руслу реки, чтобы поставить створ.');
+      if (!quiet) {
+        status(resp.demo
+          ? 'Внешние тайлы недоступны — показана демо-подложка. Кликните по руслу реки.'
+          : 'Карта обновлена. Кликните по руслу реки, чтобы поставить створ.');
+      }
     } catch (e) {
       status(e.message, true); toast(e.message);
     } finally { S.map.loading = false; }
@@ -753,11 +781,14 @@
         ...mapParams(),
         outlet_lon: S.map.outlet.lon, outlet_lat: S.map.outlet.lat
       });
-      const img = await loadImage(resp.image);
-      S.map.img = img;            // ответ уже содержит подложку со слоями анализа
       S.map.credit = resp.credit;
       S.map.demo = !!resp.demo;
-      S.map.panDx = S.map.panDy = 0;
+      S.map.tiles = resp.tiles || S.map.tiles;
+      S.map.reportImage = resp.image;
+      if (resp.relief && !S.map.reliefImg) {
+        S.map.reliefImg = await loadImage(resp.relief);
+      }
+      S.map.overlayImg = resp.overlay ? await loadImage(resp.overlay) : null;
       showMapResult(resp);
       renderMap();
       status(`Водосбор построен: ${fmt(resp.map.area_km2, 2)} км², D = ${fmt(resp.result.D, 4)}.`);
@@ -789,7 +820,7 @@
           ['Разрешение рельефа', fmt(m.cell_m, 1) + ' м/ячейку']
         ],
         result: r, table: r.table || [], stream: r.stream || {},
-        plot: r.plot, image: S.map.img ? S.map.img.src : null
+        plot: r.plot, image: S.map.reportImage || (S.map.img ? S.map.img.src : null)
       }, 'gidrofraktal-map-report.pdf');
       status('PDF-отчёт по карте сохранён.');
     } catch (e) { status(e.message, true); toast(e.message); }

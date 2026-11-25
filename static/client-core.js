@@ -25,17 +25,22 @@
       credit: 'Карта: © OpenTopoMap (CC-BY-SA), данные © OpenStreetMap'
     }
   };
-  const TERRAIN_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+  const TERRAIN_URL = 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png';
   const TERRAIN_CREDIT = 'Рельеф: Mapzen / AWS Terrain Tiles';
 
   // ------------------------------------------------------------- изображения
   function loadImage(src) {
     return new Promise((resolve, reject) => {
       const img = new Image();
+      try { img.referrerPolicy = 'no-referrer'; } catch (e) { /* ignore */ }
       img.onload = () => resolve(img);
       img.onerror = () => reject(new Error('Не удалось прочитать изображение.'));
       img.src = src;
     });
+  }
+  function loadFirstImage(urls) {
+    if (!urls.length) return Promise.reject(new Error('нет источников тайла'));
+    return loadImage(urls[0]).catch(() => loadFirstImage(urls.slice(1)));
   }
   function dataUrlToBytes(dataURL) {
     const comma = dataURL.indexOf(',');
@@ -455,14 +460,26 @@
     }
     return out;
   }
-  function fetchImage(url) {
+  // Обычные <img> показывают тайлы без CORS (canvas при этом «загрязняется»,
+  // поэтому данные для отчёта берём из отдельного синтетического холста).
+  function fetchImage(urls) { return loadFirstImage(Array.isArray(urls) ? urls : [urls]); }
+  function fetchCorsOnce(url) {
     return fetch(url, { mode: 'cors' }).then((r) => {
       if (!r.ok) throw new Error('tile');
       return r.blob();
     }).then((blob) => {
-      const url = URL.createObjectURL(blob);
-      return loadImage(url).then((img) => { URL.revokeObjectURL(url); return img; });
+      const objectUrl = URL.createObjectURL(blob);
+      return loadImage(objectUrl).then((img) => {
+        URL.revokeObjectURL(objectUrl);
+        return img;
+      });
     });
+  }
+  // Для чтения высот нужен CORS. Основной хост S3 — виртуальный; если он
+  // недоступен, пробуем публичный CORS-прокси, иначе включаем демо-рельеф.
+  function fetchImageCors(url) {
+    return fetchCorsOnce(url).catch(() => fetchCorsOnce(
+      'https://api.allorigins.win/raw?url=' + encodeURIComponent(url)));
   }
   function valleyCenter(v) {
     return 0.5 + 0.045 * Math.sin(2 * Math.PI * (v - 0.5))
@@ -581,7 +598,7 @@
     const nx = Math.max(1, tx1 - tx0 + 1), ny = Math.max(1, ty1 - ty0 + 1);
     const W = nx * TILE, H = ny * TILE;
     const tiles = tileRange(tx0, ty0, tx1, ty1);
-    const jobs = tiles.map(([tx, ty]) => fetchImage(TERRAIN_URL
+    const jobs = tiles.map(([tx, ty]) => fetchImageCors(TERRAIN_URL
       .replace('{z}', demZoom).replace('{x}', tx).replace('{y}', ty))
       .then((img) => {
         const c = canvasContext(TILE, TILE);
@@ -627,6 +644,34 @@
     return { dem: out, W, H };
   }
 
+  function hillshadeOverlay(info, geo, W, H) {
+    const sampled = sampleDemToView(info, geo, W, H);
+    const dem = sampled.dem;
+    const { canvas, ctx } = canvasContext(W, H);
+    const img = ctx.createImageData(W, H);
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < dem.length; i++) {
+      if (dem[i] < lo) lo = dem[i];
+      if (dem[i] > hi) hi = dem[i];
+    }
+    const range = Math.max(hi - lo, 1e-6);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        const x1 = Math.min(W - 1, x + 1), y1 = Math.min(H - 1, y + 1);
+        const dx = (dem[y * W + x1] - dem[i]) / range;
+        const dy = (dem[y1 * W + x] - dem[i]) / range;
+        const norm = Math.sqrt(dx * dx + dy * dy + 0.02);
+        const shade = Math.max(0.25, Math.min(1, (-dx * 0.6 - dy * 0.6 + 0.85) / norm));
+        const p = i * 4;
+        img.data[p] = img.data[p + 1] = img.data[p + 2] = Math.round(shade * 255);
+        img.data[p + 3] = 140;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return canvas;
+  }
+
   function mapView(params) {
     const lon = Number(params.lon), lat = Number(params.lat), z = Number(params.zoom);
     const W = Math.max(240, Math.min(1100, Number(params.width) || 900));
@@ -635,34 +680,42 @@
     const geo = viewGeometry(lon, lat, z, W, H);
     const coords = tileRange(geo.x0, geo.y0, geo.x0 + W / TILE, geo.y0 + H / TILE)
       .filter(([x, y]) => x >= 0 && y >= 0 && x < Math.pow(2, z) && y < Math.pow(2, z));
-    const { canvas, ctx } = canvasContext(W, H);
-    ctx.fillStyle = '#EDE4D6'; ctx.fillRect(0, 0, W, H);
+    // Одна и та же локальная подложка используется, если тайлы не пришли,
+    // и как «чистая» копия для PDF (оригинальные тайлы загрязняют canvas).
+    const safe = syntheticBase(geo, source);
     const sub = ['a', 'b', 'c'];
     const jobs = coords.map(([x, y]) => {
-      let url = SOURCES[source].url;
-      if (url.includes('{s}')) url = url.replace('{s}', sub[(x + y) % 3]);
-      url = url.replace('{z}', z).replace('{x}', x).replace('{y}', y);
-      return fetchImage(url).then((img) => ({ img, x, y })).catch(() => null);
+      const template = SOURCES[source].url;
+      const urls = [template];
+      if (source === 'esri') {
+        urls.push('https://services.arcgisonline.com/ArcGIS/rest/services/' +
+          'World_Imagery/MapServer/tile/{z}/{y}/{x}');
+        urls.push('https://tile.openstreetmap.org/{z}/{x}/{y}.png');
+      } else {
+        urls.push('https://a.tile.opentopomap.org/{z}/{x}/{y}.png');
+      }
+      const candidates = urls.map((u) => u
+        .replace('{s}', sub[(x + y) % 3])
+        .replace('{z}', z).replace('{x}', x).replace('{y}', y));
+      return fetchImage(candidates).then((img) => ({
+        img, px: (x - geo.x0) * TILE, py: (y - geo.y0) * TILE
+      })).catch(() => null);
     });
-    return Promise.all(jobs).then((tiles) => {
-      let loaded = 0;
-      tiles.forEach((t) => {
-        if (!t) return;
-        loaded++;
-        ctx.drawImage(t.img, Math.round((t.x - geo.x0) * TILE), Math.round((t.y - geo.y0) * TILE), TILE, TILE);
-      });
-      const demo = loaded === 0;
-      if (demo) ctx.drawImage(syntheticBase(geo, source), 0, 0);
-      const answer = (base) => ({
-        ok: true, image: base.toDataURL('image/jpeg', 0.88),
-        credit: SOURCES[source].credit + ' · ' + TERRAIN_CREDIT + (demo ? ' (демо)' : ''),
+    return Promise.all(jobs).then((results) => {
+      const tiles = results.filter(Boolean);
+      const demo = tiles.length === 0;
+      const answer = (relief) => ({
+        ok: true,
+        image: safe.toDataURL('image/jpeg', 0.88),
+        tiles, relief: relief ? relief.toDataURL('image/png') : null,
+        credit: SOURCES[source].credit + ' · ' + TERRAIN_CREDIT + (demo ? ' (демо-карта)' : ''),
         demo, cell_m: Math.round(resolutionM(lat, z) * 100) / 100, geo
       });
-      if (!params.relief) return answer(canvas);
+      if (!params.relief) return answer(null);
       const dz = Math.min(z, 12);
       return loadTerrain(geo, dz, 0).then((real) => {
         const info = real || syntheticDem(geo, Math.min(z, 10), 0);
-        return answer(blendRelief(canvas, sampleDemToView(info, geo, W, H), W, H));
+        return answer(hillshadeOverlay(info, geo, W, H));
       });
     });
   }
@@ -911,16 +964,20 @@
       const strahler = strahlerOrder(fdir, net, acc, dW, dH);
       const r = cantorDimension(ch.line, dW, dH, 60);
       const result = cleanResult(r, 'skeleton');
-      const base = canvasContext(W, H);
-      return loadImage(viewResult.image).then((img) => {
-        base.ctx.drawImage(img, 0, 0, W, H);
-        const tp = lonlatToTile(outletLon, outletLat, geo.z);
-        const image = overlayMap(base.canvas, geo, dgeo, catchMask, net, ch.line,
-          [(tp.x - geo.x0) * TILE, (tp.y - geo.y0) * TILE]);
+      const tp = lonlatToTile(outletLon, outletLat, geo.z);
+      const overlayCanvas = canvasContext(W, H);
+      const overlay = overlayMap(overlayCanvas.canvas, geo, dgeo, catchMask, net, ch.line,
+        [(tp.x - geo.x0) * TILE, (tp.y - geo.y0) * TILE]);
+      const reportCanvas = canvasContext(W, H);
+      return Promise.all([loadImage(viewResult.image), loadImage(overlay)]).then(([baseImg, overImg]) => {
+        reportCanvas.ctx.drawImage(baseImg, 0, 0, W, H);
+        reportCanvas.ctx.drawImage(overImg, 0, 0, W, H);
+        const image = reportCanvas.canvas.toDataURL('image/png');
         return {
-          ok: true, image, demo: !!viewResult.demo,
-          credit: SOURCES[source].credit + ' · ' + TERRAIN_CREDIT +
-            (viewResult.demo ? ' (демо-рельеф)' : ''),
+          ok: true, image, overlay,
+          tiles: viewResult.tiles, relief: viewResult.relief,
+          demo: !!viewResult.demo,
+          credit: viewResult.credit,
           map: {
             area_km2: Math.round(catchResult.count * cell * cell / 1e6 * 1000) / 1000,
             channel_km: Math.round(ch.count * cell / 1000 * 1000) / 1000,
