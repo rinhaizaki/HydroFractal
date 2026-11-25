@@ -64,8 +64,8 @@ flowchart TB
 
   subgraph Sources["ВНЕШНИЕ ДАННЫЕ"]
     File["JPG / PNG / TIFF<br/>8 и 16 бит"]
-    Tiles["Sentinel-2 L2A → Esri → Google<br/>(OpenTopoMap отключён)"]
-    DEM["AWS Terrain Tiles<br/>Mapzen / SRTM"]
+    Tiles["Sentinel-2 L2A / PC STAC + TiTiler<br/>Copernicus DEM GLO-30 / PC<br/>(OpenTopoMap отключён)"]
+    DEM["Copernicus DEM GLO-30<br/>Planetary Computer / TiTiler"]
   end
 
   File --> UI
@@ -176,7 +176,7 @@ sequenceDiagram
 2. `app.js` собирает `mapParams()`: центр, zoom, размер, источник, флаг рельефа.
    Если Leaflet уже рисует подложку, передаётся `skip_tiles: true`, чтобы ядро
    не загружало тайлы повторно.
-3. Ядро получает DEM (AWS Terrain Tiles или синтетический) и строит конвейер:
+3. Ядро получает DEM (Copernicus DEM GLO-30 через Planetary Computer или синтетический) и строит конвейер:
 
 ```text
 fillDepressions → flowDirections (D8) → flowAccumulation
@@ -265,7 +265,8 @@ S = {
 
 ### 7.2. Фрактальная размерность
 
-Используется метод квадратов Кантора:
+Используется метод квадратов Кантора (в счёт идут только клетки,
+пересекающие реку; площадь водосбора не считается как заполненная область):
 
 ```text
 ε = side / n
@@ -286,11 +287,20 @@ D = 1 + h/2
 
 ### 7.4. Карта и рельеф
 
-- Тайлы: `Sentinel-2 L2A` (Copernicus / Planetary Computer) → `Esri` → `Google Satellite`; OpenTopoMap отключён.
-- DEM: `elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png`.
+- Тайлы: `Sentinel-2 L2A` через STAC + item tiles Planetary Computer → `Esri` → `Google Satellite`; OpenTopoMap отключён.
+- DEM: `cop-dem-glo-30` через Planetary Computer TiTiler, item-тайлы
+  `collections/cop-dem-glo-30/items/Copernicus_DSM_COG_10_N{lat}_00_E{lon}_00_DEM/tiles/...`,
+  шкала −1000…4000 м.
 - При недоступности сети включается `core/offline_map.py` / `syntheticDem`.
 - Гео-привязка хранится в `geo {x0, y0, z, w, h}`; перевод пиксель ↔ lon/lat
   идёт через `lonlatToTile` / `tileToLonlat`.
+
+### 7.5. Подтверждение и защита интерфейса
+
+Перед расчётом D показывается диалог с проверкой створа/области и напоминанием
+об обрезке: все расчёты фоторежима идут по текущему (обрезанному) снимку и маске.
+Контекстное меню, копирование, перетаскивание и печать подавлены, на PrintScreen
+показывается защитный слой. Полностью запретить снимок экрана веб-страница не может.
 
 ---
 

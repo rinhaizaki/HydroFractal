@@ -20,13 +20,47 @@
       credit: 'Снимок: Esri, Maxar, Earthstar Geographics'
     },
     sentinel: {
-      name: 'Sentinel-2 cloudless (EOX)',
-      url: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg',
-      credit: 'Sentinel-2 cloudless: EOX IT Services / Copernicus'
+      name: 'Sentinel-2 L2A (Planetary Computer)',
+      url: 'https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/{z}/{x}/{y}@1x?collection=sentinel-2-l2a&item={item}&assets=visual&asset_bidx=visual%7C1%2C2%2C3&nodata=0&format=png',
+      credit: 'Sentinel-2 L2A: Copernicus / Planetary Computer'
     }
   };
-  const TERRAIN_URL = 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png';
-  const TERRAIN_CREDIT = 'Рельеф: Mapzen / AWS Terrain Tiles';
+  const PC_STAC = 'https://planetarycomputer.microsoft.com/api/stac/v1/search';
+  const PC_DEM_TILES = 'https://planetarycomputer.microsoft.com/api/data/v1/collections/cop-dem-glo-30/items/{item}/tiles/WebMercatorQuad/{z}/{x}/{y}@1x?assets=data&rescale=-1000,4000&format=png';
+  const TERRAIN_CREDIT = 'ЦМР: Copernicus DEM GLO-30 / Planetary Computer';
+  const sentinelItems = new Map();
+  function findSentinelItem(lon, lat) {
+    const key = Math.round(lon * 4) + ':' + Math.round(lat * 4);
+    if (sentinelItems.has(key)) return sentinelItems.get(key);
+    const q = new URLSearchParams({
+      collections: 'sentinel-2-l2a',
+      bbox: `${(lon - 0.16).toFixed(5)},${(lat - 0.16).toFixed(5)},${(lon + 0.16).toFixed(5)},${(lat + 0.16).toFixed(5)}`,
+      datetime: '2024-01-01/2026-12-31', limit: '1',
+      query: JSON.stringify({ 'eo:cloud_cover': { lt: 25 } })
+    });
+    const promise = fetch(PC_STAC + '?' + q.toString())
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error('STAC недоступен')))
+      .then((d) => (d.features && d.features[0] && d.features[0].id) || null)
+      .catch(() => null);
+    sentinelItems.set(key, promise);
+    return promise;
+  }
+  function tileToLonLat(x, y, z) {
+    const n = Math.pow(2, z);
+    const lon = x / n * 360 - 180;
+    const lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180 / Math.PI;
+    return [lon, lat];
+  }
+  function demItemName(lon, lat) {
+    const ilon = Math.floor(lon), ilat = Math.floor(lat);
+    return 'Copernicus_DSM_COG_10_' + (ilat >= 0 ? 'N' : 'S') + Math.abs(ilat) +
+      '_00_' + (ilon >= 0 ? 'E' : 'W') + String(Math.abs(ilon)).padStart(3, '0') + '_00_DEM';
+  }
+  function pcDemUrl(z, x, y) {
+    const [lon, lat] = tileToLonLat(x + 0.5, y + 0.5, z);
+    return PC_DEM_TILES.replace('{item}', demItemName(lon, lat))
+      .replace('{z}', z).replace('{x}', x).replace('{y}', y);
+  }
   const TILE_CREDITS = {
     esri: [
       'Снимок: Esri, Maxar, Earthstar Geographics',
@@ -37,7 +71,7 @@
       'Карта: © OpenStreetMap (резерв)'
     ],
     sentinel: [
-      'Sentinel-2 cloudless: EOX IT Services / Copernicus',
+      'Sentinel-2 L2A: Copernicus / Planetary Computer',
       'Снимок: Esri, Maxar, Earthstar Geographics',
       'Снимок: Google Satellite'
     ]
@@ -624,15 +658,15 @@
     const nx = Math.max(1, tx1 - tx0 + 1), ny = Math.max(1, ty1 - ty0 + 1);
     const W = nx * TILE, H = ny * TILE;
     const tiles = tileRange(tx0, ty0, tx1, ty1);
-    const jobs = tiles.map(([tx, ty]) => fetchImageCors(TERRAIN_URL
-      .replace('{z}', demZoom).replace('{x}', tx).replace('{y}', ty))
+    const jobs = tiles.map(([tx, ty]) => fetchImageCors(pcDemUrl(demZoom, tx, ty))
       .then((img) => {
         const c = canvasContext(TILE, TILE);
         c.ctx.drawImage(img, 0, 0);
         const d = c.ctx.getImageData(0, 0, TILE, TILE).data;
         const heights = new Float32Array(TILE * TILE);
         for (let i = 0; i < heights.length; i++) {
-          heights[i] = d[i * 4] * 256 + d[i * 4 + 1] + d[i * 4 + 2] / 256 - 32768;
+          // Copernicus DEM, rescale -1000..4000; прозрачное — вне 1° тайла.
+          heights[i] = d[i * 4 + 3] < 128 ? NaN : d[i * 4] / 255 * 5000 - 1000;
         }
         return { tx, ty, heights };
       }).catch(() => null));
@@ -699,6 +733,14 @@
   }
 
   function mapView(params) {
+    const source = SOURCES[params.source] ? params.source : 'esri';
+    return (source === 'sentinel'
+      ? findSentinelItem(Number(params.lon), Number(params.lat))
+      : Promise.resolve(null))
+      .then((item) => mapViewCore(params, item));
+  }
+
+  function mapViewCore(params, sentinelItem) {
     const lon = Number(params.lon), lat = Number(params.lat), z = Number(params.zoom);
     const W = Math.max(240, Math.min(1100, Number(params.width) || 900));
     const H = Math.max(180, Math.min(760, Number(params.height) || 580));
@@ -712,11 +754,9 @@
     const skipTiles = !!params.skip_tiles;   // подложку грузит Leaflet
     const sub = ['a', 'b', 'c'];
     const jobs = skipTiles ? [] : coords.map(([x, y]) => {
-      const template = SOURCES[source].url;
+      const template = SOURCES[source].url.replace('{item}',
+        encodeURIComponent(sentinelItem || ''));
       const urls = [template];
-      if (source === 'sentinel') {
-        urls.push('https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg');
-      }
       urls.push('https://services.arcgisonline.com/ArcGIS/rest/services/' +
         'World_Imagery/MapServer/tile/{z}/{y}/{x}');
       urls.push('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}');

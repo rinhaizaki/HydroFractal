@@ -29,6 +29,8 @@
     mapMinimapBox: $('mapMinimapBox'), mapMinimapCanvas: $('mapMinimapCanvas'),
     status: $('status'), statusRight: $('statusRight'),
     toast: $('toast'), modal: $('modal'), modalTitle: $('modalTitle'), modalBody: $('modalBody'),
+    confirmModal: $('confirmModal'), confirmTitle: $('confirmTitle'), confirmText: $('confirmText'),
+    screenshotShield: $('screenshotShield'),
     fileInput: $('fileInput')
   };
 
@@ -43,15 +45,16 @@
     zoom: 1, cx: 0, cy: 0, fit: 1,
     undo: [], redo: [], painting: false, panning: false, lastPaint: null, lastPointer: null,
     result: null, waterPixels: 0, waterShare: 0, minimapVisible: false, maskNonEmpty: false,
-    overlayDataURL: null, maskTouched: false,
+    overlayDataURL: null, maskTouched: false, cropped: false,
     crop: { active: false, start: null, end: null },
     mapTabLoaded: false, activeTab: 'photo',
     map: {
       lon: 30.33510, lat: 59.93428, zoom: 11, source: 'sentinel', relief: false,
-      sentinelItem: null, sentinelLoading: false, ndwiLayer: null, ndwiOn: false,
+      sentinelItem: null, sentinelLoading: false, demItem: null, demLoading: false,
+      ndwiLayer: null, ndwiOn: false,
       waterLayer: null, waterImageLayer: null, markLayer: null, waterObjects: [],
       img: null, geo: null, outlet: null, result: null, info: null,
-      credit: 'Sentinel-2 L2A: Copernicus · ЦМР: AWS Terrain Tiles', demo: false, cell: 0,
+      credit: 'Sentinel-2 L2A: Copernicus / Planetary Computer · ЦМР: Copernicus DEM GLO-30 / Planetary Computer', demo: false, cell: 0,
       panDx: 0, panDy: 0, dragStart: null, moved: false, loading: false,
       tiles: [], reliefImg: null, overlayImg: null, reportImage: null, mask: null, width: 0, height: 0,
       minimapVisible: false, miniKey: '', miniResp: null,
@@ -76,6 +79,53 @@
     el.toast.hidden = false;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { el.toast.hidden = true; }, 3600);
+  }
+  // ---------------------------------------------------------- подтверждения
+  let confirmResolve = null;
+  function askConfirm(title, html) {
+    return new Promise((resolve) => {
+      el.confirmTitle.textContent = title;
+      el.confirmText.innerHTML = html;
+      el.confirmModal.hidden = false;
+      confirmResolve = resolve;
+    });
+  }
+  function closeConfirm(answer) {
+    el.confirmModal.hidden = true;
+    if (confirmResolve) { const done = confirmResolve; confirmResolve = null; done(!!answer); }
+  }
+  function initScreenshotGuard() {
+    const flash = () => {
+      el.screenshotShield.hidden = false;
+      setTimeout(() => { el.screenshotShield.hidden = true; }, 1400);
+    };
+    document.addEventListener('contextmenu', (e) => e.preventDefault());
+    document.addEventListener('copy', (e) => e.preventDefault());
+    document.addEventListener('cut', (e) => e.preventDefault());
+    document.addEventListener('dragstart', (e) => e.preventDefault());
+    document.addEventListener('selectstart', (e) => {
+      if (!e.target || !e.target.closest || !e.target.closest('.leaflet-container, .report, input, textarea')) {
+        e.preventDefault();
+      }
+    });
+    window.addEventListener('beforeprint', () => { el.screenshotShield.hidden = false; });
+    window.addEventListener('afterprint', () => { el.screenshotShield.hidden = true; });
+    document.addEventListener('keydown', (e) => {
+      const k = (e.key || '').toLowerCase();
+      const typed = e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName || '');
+      if (e.key === 'PrintScreen' || e.keyCode === 44 ||
+          (e.ctrlKey && (k === 'p' || k === 's' || k === 'c')) ||
+          (e.shiftKey && e.ctrlKey && ['i', 'j', 'c'].includes(k)) ||
+          (k === 'f12' && !typed)) {
+        e.preventDefault();
+        flash();
+      }
+    });
+    document.addEventListener('visibilitychange', () => {
+      el.screenshotShield.hidden = !document.hidden;
+    });
+    window.addEventListener('blur', () => { el.screenshotShield.hidden = false; });
+    window.addEventListener('focus', () => { el.screenshotShield.hidden = true; });
   }
   function loadImage(src) {
     return new Promise((resolve, reject) => {
@@ -198,7 +248,7 @@
       image: S.baseDataURL, W: S.W, H: S.H, sourceName: S.sourceName,
       overlayDataURL: S.overlayDataURL, result: S.result,
       waterPixels: S.waterPixels, waterShare: S.waterShare,
-      maskTouched: S.maskTouched
+      maskTouched: S.maskTouched, cropped: S.cropped
     };
   }
   function pushUndo() {
@@ -224,6 +274,7 @@
     S.waterPixels = snap.waterPixels || 0;
     S.waterShare = snap.waterShare || 0;
     S.maskTouched = !!snap.maskTouched;
+    S.cropped = !!snap.cropped;
     if (S.result) {
       showResult(S.result);
       setBadge('resultBadge', 'готово', 'ok');
@@ -468,6 +519,7 @@
       .filter((p) => p.x >= x && p.x < x + w && p.y >= y && p.y < y + h)
       .map((p) => ({ x: p.x - x, y: p.y - y }));
     S.maskTouched = true;
+    S.cropped = true;
     S.result = null;
     S.waterPixels = 0; S.waterShare = 0;
     resetView();
@@ -544,6 +596,7 @@
   }
   async function showPhoto(dataURL, name, opts) {
     const keepHistory = !!(opts && opts.keepHistory);
+    if (!keepHistory) S.cropped = false;
     const img = await loadImage(dataURL);
     S.image = img; S.baseDataURL = dataURL;
     S.W = img.naturalWidth; S.H = img.naturalHeight;
@@ -602,6 +655,12 @@
   async function analyze() {
     if (!S.image) { toast('Сначала загрузите снимок.'); return; }
     if (!hasMask()) { status('Маска пуста. Сначала выделите реку или дорисуйте её кистью.', true); return; }
+    const ok = await askConfirm('Проверьте область расчёта',
+      '<p>Вы уверены, что отмечена <b>нужная область реки</b>?</p>' +
+      '<p>Проверьте, что лишнее не нужно стереть или убрать ластиком: ' +
+      'в расчёте должна остаться только часть <b>выше створа</b>. ' +
+      (S.cropped ? 'Расчёт будет выполнен <b>по обрезанному снимку</b>.' : '') + '</p>');
+    if (!ok) { status('Расчёт отменён: проверьте маску и створ.'); return; }
     busy(true, 'Расчёт фрактальной размерности…');
     try {
       const resp = await api('/api/analyze', {
@@ -683,6 +742,7 @@
       params: [
         ['Источник', S.sourceName],
         ['Размер снимка', `${S.W} × ${S.H} px`],
+        ['Обрезка', S.cropped ? 'да — все расчёты выполнены по обрезанному снимку' : 'нет'],
         ['Способ выделения', $('method').selectedOptions[0].text],
         ['Допуск по цвету', $('tolNum').value],
         ['Точка створа', S.seed ? `x=${Math.round(S.seed.x)}, y=${Math.round(S.seed.y)}` : 'не задана'],
@@ -784,9 +844,13 @@
     if (kind === 'visual') {
       q.set('assets', 'visual'); q.set('asset_bidx', 'visual|1,2,3'); q.set('nodata', '0');
     } else if (kind === 'ndwi-color') {
+      const tr = Number(el.ndwiThreshold ? el.ndwiThreshold.value : -25) / 100;
       q.set('expression', '(B03-B08)/(B03+B08)');
-      q.set('rescale', '-1,1'); q.set('colormap_name', 'blues');
+      q.set('rescale', (tr - 0.75).toFixed(3) + ',' + (tr + 0.25).toFixed(3));
+      q.set('colormap_name', 'blues');
     } else {
+      // Raw NDWI is encoded linearly on [-1, 1] so the client can decode
+      // the actual index from the tile's red channel.
       q.set('expression', '(B03-B08)/(B03+B08)');
       q.set('rescale', '-1,1');
     }
@@ -942,11 +1006,11 @@
       const src = rctx.getImageData(0, 0, w, h);
       const out = rctx.createImageData(w, h);
       const water = new Uint8Array(w * h);
-      const threshold = Number(el.ndwiThreshold ? el.ndwiThreshold.value : 10) / 100;
+      const threshold = Number(el.ndwiThreshold ? el.ndwiThreshold.value : -25) / 100;
       for (let i = 0, p = 0; i < src.data.length; i += 4, p++) {
         if (src.data[i + 3] < 100) continue;
         const ndwi = src.data[i] / 255 * 2 - 1;
-        if (ndwi > threshold) {
+        if (ndwi >= threshold) {
           water[p] = 1;
           out.data[i] = 0; out.data[i + 1] = 205; out.data[i + 2] = 255; out.data[i + 3] = 150;
         }
@@ -987,11 +1051,11 @@
           radius: 5, color: '#ffffff', weight: 2,
           fillColor: '#00A6D6', fillOpacity: 0.95
         });
-        marker.bindPopup(`Водный объект ${i + 1}<br>Площадь ≈ ${fmt(area, 3)} км²<br>NDWI > ${fmt(threshold, 2)}`);
+        marker.bindPopup(`Водный объект ${i + 1}<br>Площадь ≈ ${fmt(area, 3)} км²<br>NDWI ≥ ${fmt(threshold, 2)}`);
         marker.addTo(S.map.waterLayer);
       });
       S.map.waterObjects = objects.map((o, i) => ({ index: i + 1, px: Math.round(o.count), area_km2: o.count * cell * cell / 1e6 }));
-      status(`Выделено водных объектов: ${objects.length}. Порог NDWI ${fmt(threshold, 2)}.`);
+      status(`Выделено водных объектов: ${objects.length}. Порог NDWI ≥ ${fmt(threshold, 2)}.`);
       toast(`Водные объекты: ${objects.length}`);
     } catch (e) {
       status(e.message, true); toast(e.message);
@@ -1154,7 +1218,7 @@
       }
       drawMapMarks(ctx, geo, true);
       el.mapCredit.textContent = S.map.leafletCredit +
-        ' · ЦМР: Mapzen / AWS Terrain Tiles' +
+        ' · ЦМР: Copernicus DEM GLO-30 / Planetary Computer' +
         (S.map.demo ? ' · демо-рельеф (нет сети)' : '');
       el.mapZoom.textContent = `z${S.map.zoom} · ${fmt(S.map.cell, 1)} м/пиксель`;
       if (S.map.minimapVisible) renderMapMinimap();
@@ -1363,7 +1427,12 @@
       S.map.outlet = { lon: S.map.lon, lat: S.map.lat };
       status('Створ не задан — используется центр карты.');
     }
-    busy(true, 'Гидрологический анализ рельефа…');
+    const ok = await askConfirm('Проверьте область водосбора',
+      '<p>Вы уверены, что створ и область водосбора выбраны правильно?</p>' +
+      '<p>Если нужно что-то стереть или убрать, отмените расчёт и проверьте ' +
+      'предварительную область (синий слой) и главное русло.</p>');
+    if (!ok) { status('Расчёт отменён: проверьте створ и водосбор.'); return; }
+    busy(true, 'Гидрологический анализ ЦМР…');
     try {
       const resp = await api('/api/map/analyze', {
         ...mapParams(),
@@ -1461,6 +1530,8 @@
     el.photoWrap.className = 'canvas-wrap tool-' + S.tool;
   }
   function bindEvents() {
+    $('confirmYes').addEventListener('click', () => closeConfirm(true));
+    $('confirmNo').addEventListener('click', () => closeConfirm(false));
     $('btnLoad').addEventListener('click', () => el.fileInput.click());
     $('btnLoadBig').addEventListener('click', () => el.fileInput.click());
     $('btnDemoImage').addEventListener('click', () => loadRawImage(generateDemoImage(), 'demo-river.png'));
@@ -1712,7 +1783,10 @@
     el.modal.addEventListener('click', (e) => { if (e.target === el.modal) closeModal(); });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { closeModal(); closeMenus(); return; }
+      if (e.key === 'Escape') {
+        if (!el.confirmModal.hidden) closeConfirm(false);
+        closeModal(); closeMenus(); return;
+      }
       const ctrl = e.ctrlKey || e.metaKey;
       if (!ctrl) return;
       const k = e.key.toLowerCase();
@@ -1790,6 +1864,12 @@
       ложатся на прямую, её наклон — размерность блуждания h, а итоговая размерность
       <b>D = 1 + h/2</b>. По D оцениваются средний многолетний расход Qср, коэффициенты
       вариации Cv и асимметрии Cs и кривая обеспеченности Пирсона III типа.</p>
+      <p><b>Что считать квадратами.</b> При определении D реки учитываются только
+      клетки, через которые проходит русло (и притоки, если они есть в маске).
+      Площадь водосбора сама по себе в счёт не идёт: если закрасить все клетки
+      водосбора, получится D ≈ 2 — размерность площади, а не извилистости реки.
+      Водосбор нужен лишь для выбора створа и оценки площади в картографическом
+      режиме.</p>
       <h2>2. Работа со снимком</h2>
       <ol>
         <li><b>Загрузите снимок</b> кнопкой «📂 Загрузить снимок» или перетащите файл.
@@ -1905,8 +1985,11 @@
         Абдулкеримовой Мариной, Клишиной Надеждой, Мережкиной Екатериной.</p>
         <p>Сегментация воды в HSV, скелет/контур маски, канторовский метод (D = 1 + h/2),
         оценка Cv, Cs и кривой обеспеченности по Пирсону III типа сохранены из исходной
-        версии программы. Карта использует Sentinel-2 L2A (Copernicus) и ЦМР SRTM
-        (AWS Terrain Tiles), а также выделение водных объектов по NDWI.</p>`)
+        программы. Карта использует Sentinel-2 L2A (Copernicus) и ЦМР Copernicus
+        DEM GLO-30 через Planetary Computer (STAC + TiTiler), а также выделение
+        водных объектов по NDWI из каналов B03 и B08.</p>
+        <p>Копирование, печать и контекстное меню ограничены. Полностью запретить
+        снимок экрана веб-страница не может — это делает операционная система.</p>`)
     };
     if (actions[act]) actions[act]();
   }
@@ -1972,7 +2055,10 @@ D после обрезки нужно пересчитать заново.`,
 на 1 за шаг; ε = side/n. N(ε) — число клеток, по которым
 идёт линия реки. Прямая по точкам (log 1/ε, log N),
 её наклон — размерность блуждания h. Итог: D = 1 + h/2.
-Считается по «Объект расчёта» (по умолчанию — скелет).
+Считается по «Объект расчёта» (по умолчанию — скелет):
+в счёт идут только клетки, пересекающие реку, а не все клетки водосбора
+(последнее дало бы D ≈ 2). После обрезки расчёт делается по обрезанному
+снимку и его маске.
 Ориентир: D ≈ 1.6 — как у дельт Волги/Лены по публикациям
 (1.56–1.63). Для одиночного неразветвлённого русла метод
 завышает D — там правильнее клеточный box-counting.`,
@@ -2109,9 +2195,9 @@ N(ε) на малых размерах ячеек и завышают D.
 (поле Scale), куда также записываются размер,
 разрешение 300 dpi, источник и дата.
 Если оставить пустым — будет «not set».`,
-    mapSource: 'Подложка Sentinel-2 L2A (Copernicus) через Leaflet; резерв — Esri / Google Satellite. OpenTopoMap отключён.',
-    ndwiThreshold: 'Порог NDWI от 0,00 до 0,40. Чем выше порог, тем меньше водных объектов выделяется.',
-    mapRelief: 'Показать отмывку рельефа по AWS Terrain Tiles. Она же используется для расчёта водосбора и главного русла.',
+    mapSource: 'Подложка Sentinel-2 L2A через Planetary Computer STAC + TiTiler; резерв — Esri / Google Satellite. OpenTopoMap отключён.',
+    ndwiThreshold: 'Порог NDWI от −0,25 до 0,40. Вода учитывается при NDWI ≥ порога (по умолчанию −0,25).',
+    mapRelief: 'Показать отмывку по Copernicus DEM GLO-30 (Planetary Computer). Та же ЦМР используется для расчёта водосбора и главного русла.',
     mapMarkText: 'Подпись для следующей метки на карте. Оставьте пустым — будет автоматическая нумерация.',
     mapLat: 'Широта центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.',
     mapLon: 'Долгота центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.'
@@ -2131,6 +2217,15 @@ N(ε) на малых размерах ячеек и завышают D.
 
   // ------------------------------------------------------------------- init
   function init() {
+    initScreenshotGuard();
+    if ($('ndwiValue')) {
+      const upd = () => {
+        const v = Number(el.ndwiThreshold.value) / 100;
+        $('ndwiValue').textContent = 'NDWI ' + (v < 0 ? '≥ −' : '≥ ') + Math.abs(v).toFixed(2).replace('.', ',');
+      };
+      el.ndwiThreshold.addEventListener('input', upd);
+      upd();
+    }
     initTooltips();
     setStatusForTool();
     bindEvents();

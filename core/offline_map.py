@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Демонстрационные подложки и рельеф для автономного окружения.
 
-Карта и SRTM-тайлы в обычной работе берутся из сети. Если сеть недоступна
-(например, сервер запущен в изолированном preview-окружении), web-версия
+Карта и тайлы ЦМР в обычной работе берутся из сети. Если сеть недоступна
+(например, сервер запущен в изолированном preview-окружении), сайт
 показывает детерминированную синтетическую местность с руслом и
 выполняет тот же конвейер D8/водосбор/Кантор на этом рельефе. Это позволяет
 проверить все функции сайта без интернета; при наличии сети используется
@@ -26,7 +26,7 @@ def ensure_mode():
     global _NETWORK_OK
     if _NETWORK_OK is None:
         try:
-            url = map_core.TERRAIN_URL.format(z=2, x=2, y=1)
+            url = 'https://planetarycomputer.microsoft.com/api/stac/v1/collections/cop-dem-glo-30'
             req = urllib.request.Request(url, headers=map_core.UA)
             with urllib.request.urlopen(req, timeout=3) as resp:
                 _NETWORK_OK = len(resp.read(64)) > 0
