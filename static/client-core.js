@@ -28,7 +28,8 @@
   const PC_STAC = 'https://planetarycomputer.microsoft.com/api/stac/v1/search';
   const PC_DEM_TILES = 'https://planetarycomputer.microsoft.com/api/data/v1/collections/cop-dem-glo-30/items/{item}/tiles/WebMercatorQuad/{z}/{x}/{y}@1x?assets=data&rescale=-1000,4000&format=png';
   const NASADEM_TILES = 'https://planetarycomputer.microsoft.com/api/data/v1/collections/nasadem/items/{item}/tiles/WebMercatorQuad/{z}/{x}/{y}@1x?assets=elevation&rescale=-100,4000&format=png';
-  const TERRAIN_CREDIT = 'ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM)';
+  const TERRARIUM_URL = 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png';
+  const TERRAIN_CREDIT = 'ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM), резерв — Terrarium';
   const sentinelItems = new Map();
   function findSentinelItem(lon, lat) {
     const key = Math.round(lon * 4) + ':' + Math.round(lat * 4);
@@ -681,21 +682,29 @@
     const nx = Math.max(1, tx1 - tx0 + 1), ny = Math.max(1, ty1 - ty0 + 1);
     const W = nx * TILE, H = ny * TILE;
     const tiles = tileRange(tx0, ty0, tx1, ty1);
-    const decode = (img, lo, hi, source) => {
+    const decode = (img, lo, hi, source, terrarium) => {
       const c = canvasContext(TILE, TILE);
       c.ctx.drawImage(img, 0, 0);
       const d = c.ctx.getImageData(0, 0, TILE, TILE).data;
       const heights = new Float32Array(TILE * TILE);
       for (let i = 0; i < heights.length; i++) {
-        heights[i] = d[i * 4 + 3] < 128 ? NaN : d[i * 4] / 255 * (hi - lo) + lo;
+        const q = i * 4;
+        heights[i] = terrarium
+          ? d[q] * 256 + d[q + 1] + d[q + 2] / 256 - 32768
+          : (d[q + 3] < 128 ? NaN : d[q] / 255 * (hi - lo) + lo);
       }
       return { tx, ty, heights, source };
     };
-    const jobs = tiles.map(([tx, ty]) => fetchImageCors(pcDemUrl(demZoom, tx, ty))
-      .then((img) => decode(img, -1000, 4000, 'cop-dem-glo-30'))
-      .catch(() => fetchImageCors(nasaDemUrl(demZoom, tx, ty))
-        .then((img) => decode(img, -100, 4000, 'nasadem')))
-      .catch(() => null));
+    const jobs = tiles.map(([tx, ty]) => {
+      const terrainUrl = TERRARIUM_URL.replace('{z}', demZoom).replace('{x}', tx).replace('{y}', ty);
+      return fetchImageCors(pcDemUrl(demZoom, tx, ty))
+        .then((img) => decode(img, -1000, 4000, 'cop-dem-glo-30', false))
+        .catch(() => fetchImageCors(nasaDemUrl(demZoom, tx, ty))
+          .then((img) => decode(img, -100, 4000, 'nasadem', false)))
+        .catch(() => fetchImageCors(terrainUrl)
+          .then((img) => decode(img, 0, 1, 'terrarium', true)))
+        .catch(() => null);
+    });
     return Promise.all(jobs).then((parts) => {
       if (parts.every((p) => !p)) return null;
       const dem = new Float32Array(W * H);

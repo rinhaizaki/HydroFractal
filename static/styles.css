@@ -283,16 +283,6 @@ table.data td:first-child { text-align: left; }
 .confirm-actions { display: flex; gap: 8px; margin-top: 16px; }
 .confirm-actions .btn { margin-top: 0; }
 
-/* BEST-EFFORT: затрудняем копирование и снимки интерфейса. */
-body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-.leaflet-container, .report { -webkit-user-select: text; user-select: text; }
-.screenshot-shield {
-  position: fixed; inset: 0; z-index: 500;
-  display: grid; place-items: center;
-  background: rgba(95, 0, 1, .92); color: #fff;
-  font-size: 22px; font-weight: 700; letter-spacing: .5px;
-}
-.screenshot-shield[hidden] { display: none; }
 
 .toast {
   position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%);
@@ -347,3 +337,17 @@ body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none
 .mark-row input[type=text] { min-width: 120px; flex: 1 1 120px; padding: 3px 5px; font-size: 12px; }
 .mark-row button { padding: 3px 7px; font-size: 11px; }
 .map-canvas-wrap.mask-mode { background: #fff; }
+
+/* Сгруппированные панели инструментов: меньше высота, нужное раскрывается */
+.tool-group { border: 1px solid var(--beige); border-radius: 5px; background: rgba(255,255,255,.35); }
+.tool-group > summary {
+  cursor: pointer; padding: 2px 8px; font-size: 11px; font-weight: 700;
+  color: #5F0001; list-style: none;
+}
+.tool-group > summary::-webkit-details-marker { display: none; }
+.tool-group > summary::before { content: '▸ '; }
+.tool-group[open] > summary::before { content: '▾ '; }
+.tool-group > .toolbar { padding: 0 6px 4px; }
+.tool-group:not([open]) > .toolbar { display: none; }
+.toolbars { max-height: 118px; }
+.map-toolbar.grouped { display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 6px; }
