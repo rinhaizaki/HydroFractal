@@ -11,7 +11,7 @@
       /[?&]static=1/.test(location.search);
   </script>
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css?v=1">
-  <link rel="stylesheet" href="styles.css?v=11">
+  <link rel="stylesheet" href="styles.css?v=12">
 </head>
 <body>
 <div class="app-shell">
@@ -251,9 +251,14 @@
 
     <!-- ---------- вкладка «Карта и водосбор» ---------- -->
     <section class="panel" id="panel-map" role="tabpanel">
-      <div class="map-toolbar grouped">
-        <details class="tool-group" open>
-          <summary>Подложка, вид и слои</summary>
+      <div class="toolbars ribbon">
+        <div class="ribbon-tabs" role="tablist">
+        <button class="ribbon-tab active" data-ribbon-tab="map-layers" role="tab" aria-selected="true">Подложка, вид и слои</button>
+        <button class="ribbon-tab" data-ribbon-tab="map-marks" role="tab" aria-selected="false">Координаты, метки и рисунки</button>
+        <button class="ribbon-tab" data-ribbon-tab="map-actions" role="tab" aria-selected="false">Навигация, расчёт и отчёт</button>
+        </div>
+        <div class="ribbon-panels">
+        <div class="ribbon-panel active" data-ribbon-panel="map-layers" role="tabpanel">
           <div class="toolbar">
         <label class="field-label" for="mapSource">Слой:</label>
         <select id="mapSource" class="select">
@@ -273,8 +278,8 @@
         <span class="field-label" id="ndwiValue">NDWI ≥ −0,25</span>
           </div>
         </details>
-        <details class="tool-group" open>
-          <summary>Координаты, метки и рисунки</summary>
+        </div>
+        <div class="ribbon-panel" data-ribbon-panel="map-marks" role="tabpanel">
           <div class="toolbar">
         <label class="field-label" for="mapLat">Широта</label>
         <input type="number" id="mapLat" class="num coord-num" value="59.93428" step="0.00001" min="-85" max="85" title="Широта центра карты, градусы">
@@ -292,8 +297,8 @@
         <button class="btn small" id="btnMapDrawClear" title="Удалить все рисунки с карты">🗑 Рисунки</button>
           </div>
         </details>
-        <details class="tool-group" open>
-          <summary>Навигация, расчёт и отчёт</summary>
+        </div>
+        <div class="ribbon-panel" data-ribbon-panel="map-actions" role="tabpanel">
           <div class="toolbar">
         <button class="btn small" id="btnMapHome" title="Вернуться к центру — Санкт-Петербург">⌂</button>
         <button class="btn small" id="btnMapZoomOut" title="Уменьшить масштаб карты">🔍−</button>
@@ -305,7 +310,10 @@
         <span class="map-coords" id="mapCoords">30.33510° E, 59.93428° N</span>
           </div>
         </details>
+        </div>
+        </div>
       </div>
+
       <div class="map-workspace">
         <div class="map-left">
           <div class="canvas-wrap map-canvas-wrap" id="mapWrap">
@@ -394,6 +402,6 @@
 
 <script src="vendor/leaflet/leaflet.js?v=1"></script>
 <script src="client-core.js?v=15"></script>
-<script src="app.js?v=18"></script>
+<script src="app.js?v=19"></script>
 </body>
 </html>
