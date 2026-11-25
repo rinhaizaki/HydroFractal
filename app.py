@@ -230,155 +230,74 @@ def make_plot_png(result: dict) -> str:
 # PDF-отчёт
 # ---------------------------------------------------------------------------
 def make_report_pdf(payload: dict) -> bytes:
-    from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-    from reportlab.lib.units import cm
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.platypus import (Image as RLImage, PageBreak, Paragraph,
-                                    SimpleDocTemplate, Spacer, Table, TableStyle)
+    """Канонический отчёт HydroFractal: разделы I–VII, таблицы и рисунки."""
+    import report_reference
+    from types import SimpleNamespace
 
-    font_dir = "/usr/share/fonts/truetype/dejavu"
-    pdfmetrics.registerFont(TTFont("HF", os.path.join(font_dir, "DejaVuSans.ttf")))
-    pdfmetrics.registerFont(TTFont("HF-Bold", os.path.join(font_dir, "DejaVuSans-Bold.ttf")))
-    pdfmetrics.registerFontFamily("HF", normal="HF", bold="HF-Bold")
+    result = dict(payload.get("result") or {})
+    fit_rows = result.get("fit_rows") or []
+    if fit_rows and "x" not in result:
+        result["x"] = np.array([math.log10(1.0 / float(row[1])) for row in fit_rows])
+        result["y"] = np.array([math.log10(float(row[2])) for row in fit_rows])
 
-    olive = colors.HexColor("#9CA75A")
-    burgundy = colors.HexColor("#733933")
-    brown = colors.HexColor("#8B6431")
-    cream = colors.HexColor("#F3EBE0")
-    beige = colors.HexColor("#DACAB0")
+    # Изображение и маска нужны ядру отчёта для рисунков 2 и 3.
+    try:
+        _rgb, scene = _rgb_from_bytes(_decode_data_url(payload.get("image", "")))
+    except Exception:
+        scene = Image.new("RGB", (800, 500), "white")
+        _rgb = np.asarray(scene)
+    try:
+        mask = _bool_mask_from_data_url(payload.get("mask", ""))
+    except Exception:
+        mask = np.zeros(_rgb.shape[:2], dtype=bool)
 
-    styles = getSampleStyleSheet()
-    h1 = ParagraphStyle("h1", parent=styles["Title"], fontName="HF-Bold",
-                        fontSize=20, leading=25, textColor=burgundy, spaceAfter=10)
-    h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontName="HF-Bold",
-                        fontSize=13, leading=17, textColor=brown, spaceBefore=12, spaceAfter=6)
-    body = ParagraphStyle("body", parent=styles["BodyText"], fontName="HF",
-                          fontSize=9.5, leading=14, alignment=TA_JUSTIFY,
-                          textColor=colors.HexColor("#3d2f22"))
-    small = ParagraphStyle("small", parent=body, fontSize=8, leading=11,
-                           textColor=colors.HexColor("#6b5238"))
-    cell = ParagraphStyle("cell", parent=body, fontSize=8.5, leading=11, alignment=0)
-    center = ParagraphStyle("center", parent=body, alignment=TA_CENTER, fontSize=9)
+    seed = payload.get("seed") or {}
+    try:
+        seed_xy = (float(seed["x"]), float(seed["y"])) if seed else None
+    except (KeyError, TypeError, ValueError):
+        seed_xy = None
+    seed_rgb = payload.get("seed_rgb")
+    if seed_rgb and seed_xy:
+        try:
+            sx = int(max(0, min(_rgb.shape[1] - 1, seed_xy[0])))
+            sy = int(max(0, min(_rgb.shape[0] - 1, seed_xy[1])))
+            _rgb = _rgb.copy()
+            _rgb[sy, sx] = [int(v) for v in seed_rgb[:3]]
+        except Exception:
+            pass
 
-    def P(text, style=body):
-        return Paragraph(escape(str(text)).replace("\n", "<br/>"), style)
+    method = str(payload.get("method", "color"))
+    obj = str(result.get("object") or payload.get("object") or "skeleton")
+    tol_value = payload.get("tol", 60)
 
-    def tbl(data, widths, header=True):
-        rows = []
-        for i, row in enumerate(data):
-            rows.append([P(c, cell) if not hasattr(c, "wrap") else c for c in row])
-        t = Table(rows, colWidths=widths, hAlign="CENTER", repeatRows=1 if header else 0)
-        cmds = [
-            ("GRID", (0, 0), (-1, -1), 0.5, beige),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, cream]),
-        ]
-        if header:
-            cmds += [("BACKGROUND", (0, 0), (-1, 0), olive),
-                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.white)]
-        t.setStyle(TableStyle(cmds))
-        return t
+    class _Tol:
+        def get(self):
+            return tol_value
 
-    def _img_from_data_url(value, max_w, max_h):
-        if not value or not isinstance(value, str):
-            return None
-        raw = _decode_data_url(value)
-        im = Image.open(io.BytesIO(raw)).convert("RGB")
-        bio = io.BytesIO()
-        im.save(bio, format="PNG")
-        bio.seek(0)
-        ratio = min(max_w / im.width, max_h / im.height, 1.0)
-        return RLImage(bio, width=im.width * ratio, height=im.height * ratio)
+    def _render_scene_image(max_side=1400, force_overlay=False):
+        img = scene.convert("RGB")
+        if max(img.size) > max_side:
+            k = max_side / max(img.size)
+            img = img.resize((max(1, round(img.width * k)),
+                              max(1, round(img.height * k))), Image.LANCZOS)
+        return img
 
-    def footer(canvas, doc):
-        canvas.saveState()
-        canvas.setFont("HF", 8)
-        canvas.setFillColor(brown)
-        canvas.drawString(2 * cm, 1.1 * cm, "Гидрофрактал — веб-версия")
-        canvas.drawRightString(A4[0] - 1.5 * cm, 1.1 * cm, f"Страница {doc.page}")
-        canvas.setStrokeColor(beige)
-        canvas.line(2 * cm, 1.5 * cm, A4[0] - 1.5 * cm, 1.5 * cm)
-        canvas.restoreState()
-
+    ctx = SimpleNamespace(
+        image_path=payload.get("source_name") or "—",
+        rgb=_rgb,
+        seed_xy=seed_xy,
+        color_pts=payload.get("color_pts") or [],
+        mask=mask,
+        mask_touched=bool(payload.get("mask_touched", False)),
+        tol_var=_Tol(),
+        result=result,
+        _method_index={"color": 0, "dark": 1, "hybrid": 2}.get(method, 0),
+        _object_index={"skeleton": 0, "boundary": 1, "mask": 2}.get(obj, 0),
+        _render_scene_image=_render_scene_image,
+        notify=lambda *args, **kwargs: None,
+    )
     bio = io.BytesIO()
-    doc = SimpleDocTemplate(bio, pagesize=A4, leftMargin=2 * cm, rightMargin=1.5 * cm,
-                            topMargin=1.8 * cm, bottomMargin=1.8 * cm,
-                            title="Отчёт «Гидрофрактал»")
-    story = []
-
-    story.append(P("ОТЧЁТ О ФРАКТАЛЬНОЙ РАЗМЕРНОСТИ РЕКИ", h1))
-    story.append(P(payload.get("title", "Гидрофрактал — веб-версия"), center))
-    story.append(P("Дата: " + datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), small))
-    story.append(Spacer(1, 10))
-
-    story.append(P("I. Исходные данные и параметры", h2))
-    params = payload.get("params", [])
-    story.append(tbl([["Параметр", "Значение"]] +
-                     [[str(a), str(b)] for a, b in params], [7.2 * cm, 9.4 * cm]))
-    story.append(Spacer(1, 6))
-
-    story.append(P("II. Результаты расчёта", h2))
-    result = payload.get("result", {})
-    metrics = payload.get("metrics", [])
-    if not metrics:
-        metrics = [["Фрактальная размерность D", result.get("D", "—")],
-                   ["Размерность блуждания h", result.get("h", "—")],
-                   ["Стандартная ошибка dD", result.get("dD", "—")],
-                   ["Коэффициент детерминации R²", result.get("r2", "—")]]
-    story.append(tbl([["Показатель", "Значение"]] +
-                     [[str(a), str(b)] for a, b in metrics], [7.2 * cm, 9.4 * cm]))
-
-    plot = _img_from_data_url(payload.get("plot"), 16.4 * cm, 8 * cm)
-    if plot is not None:
-        story.append(Spacer(1, 8))
-        story.append(plot)
-        story.append(P("Рисунок 1 — Зависимость log N(ε) от log(1/ε).", small))
-
-    table = payload.get("table", [])
-    if table:
-        story.append(PageBreak())
-        story.append(P("III. Полная таблица измерений", h2))
-        head = [["n", "ε, px", "N(ε)"]]
-        chunk = head + [[str(r[0]), str(r[1]), str(r[2])] for r in table]
-        story.append(tbl(chunk, [3.2 * cm, 4.2 * cm, 4.2 * cm]))
-
-    stream = payload.get("stream", {})
-    if stream:
-        story.append(Spacer(1, 10))
-        story.append(P("IV. Характеристики стока (ориентировочная оценка по D)", h2))
-        srows = [["Характеристика", "Обозначение", "Значение"],
-                 ["Средний многолетний расход", "Qср, м³/с", stream.get("Q_mean", "—")],
-                 ["Коэффициент вариации", "Cv", stream.get("Cv", "—")],
-                 ["Коэффициент асимметрии", "Cs", stream.get("Cs", "—")]]
-        story.append(tbl(srows, [8.2 * cm, 4 * cm, 4.4 * cm]))
-        story.append(Spacer(1, 6))
-        story.append(P("Использованы калибровочные связи Cv = 2(D − 1), Cs = 2Cv и "
-                       "распределение Пирсона III типа (коэффициенты Фостера–Рыбкина). "
-                       "Оценка предназначена для малоизученных рек и не заменяет "
-                       "наблюдённые гидрологические ряды.", small))
-
-    image = _img_from_data_url(payload.get("image"), 16.4 * cm, 9.5 * cm)
-    if image is not None:
-        story.append(PageBreak())
-        story.append(P("V. Снимок / карта и выделенная область", h2))
-        story.append(image)
-        story.append(P("Рисунок 2 — Исходные данные с наложенными результатами анализа.", small))
-
-    story.append(Spacer(1, 12))
-    story.append(P("Метод: покрытие изображения квадратной сеткой n×n, подсчёт числа "
-                   "клеток N(ε), пересекаемых линией реки, аппроксимация зависимости "
-                   "log N(ε) от log(1/ε) методом наименьших квадратов; "
-                   "D = 1 + h/2.", small))
-
-    doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    report_reference.write_report(ctx, bio)
     return bio.getvalue()
 
 
