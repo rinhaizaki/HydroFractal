@@ -969,12 +969,22 @@
       const overlay = overlayMap(overlayCanvas.canvas, geo, dgeo, catchMask, net, ch.line,
         [(tp.x - geo.x0) * TILE, (tp.y - geo.y0) * TILE]);
       const reportCanvas = canvasContext(W, H);
+      const channelMask = canvasContext(dW, dH);
+      const maskPixels = channelMask.ctx.createImageData(dW, dH);
+      for (let i = 0; i < ch.line.length; i++) {
+        if (!ch.line[i]) continue;
+        const q = i * 4;
+        maskPixels.data[q] = maskPixels.data[q + 1] = maskPixels.data[q + 2] = 255;
+        maskPixels.data[q + 3] = 255;
+      }
+      channelMask.ctx.putImageData(maskPixels, 0, 0);
+      const mask = channelMask.canvas.toDataURL('image/png');
       return Promise.all([loadImage(viewResult.image), loadImage(overlay)]).then(([baseImg, overImg]) => {
         reportCanvas.ctx.drawImage(baseImg, 0, 0, W, H);
         reportCanvas.ctx.drawImage(overImg, 0, 0, W, H);
         const image = reportCanvas.canvas.toDataURL('image/png');
         return {
-          ok: true, image, overlay,
+          ok: true, image, overlay, mask, width: W, height: H,
           tiles: viewResult.tiles, relief: viewResult.relief,
           demo: !!viewResult.demo,
           credit: viewResult.credit,
