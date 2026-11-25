@@ -276,6 +276,7 @@ def make_report_pdf(payload: dict) -> bytes:
         def get(self):
             return tol_value
 
+    from PIL import ImageFont
     geo = payload.get("geo") or {}
     map_report = (payload.get("source_name") == "карта и водосбор"
                   or "карте" in str(payload.get("title", "")).lower())
@@ -330,13 +331,84 @@ def make_report_pdf(payload: dict) -> bytes:
         d.text((nx + 15, ny + 30), "N", fill=(115, 57, 51, 255), font=font)
         return Image.alpha_composite(img.convert("RGBA"), layer).convert("RGB")
 
+    def _draw_report_marks(img):
+        """Метки и рисунки-заметки — поверх маски, под координатной меткой."""
+        W0 = max(1, int(payload.get("width") or img.width))
+        H0 = max(1, int(payload.get("height") or img.height))
+        sx, sy = img.width / W0, img.height / H0
+        d = ImageDraw.Draw(img)
+        font_path = os.path.join(BASE_DIR, "fonts", "Tinos-Bold.ttf")
+        if not os.path.exists(font_path):
+            font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        try:
+            font = ImageFont.truetype(font_path, max(12, round(img.width / 72)))
+        except Exception:
+            font = ImageFont.load_default()
+        color = (lambda c: tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))
+                 if isinstance(c, str) and c.startswith("#") and len(c) == 7 else (95, 0, 1))
+
+        def marker(x, y, col, label):
+            if x is None or y is None:
+                return
+            x, y = int(round(x)), int(round(y))
+            r = max(7, round(img.width / 150))
+            col = color(col)
+            d.ellipse([x - r, y - r, x + r, y + r], fill=col, outline=(255, 255, 255), width=2)
+            arm = r + 5
+            d.line([x - arm, y, x + arm, y], fill=col, width=2)
+            d.line([x, y - arm, x, y + arm], fill=col, width=2)
+            d.text((x + arm, y - arm), label, fill=col, font=font,
+                   stroke_width=2, stroke_fill=(255, 255, 255))
+
+        def project(lat, lon):
+            center = geo.get("center") or {}
+            if center.get("lat") is None or center.get("lon") is None:
+                return None
+            z = int(geo.get("zoom") or 11)
+            scale = 256.0 * (2 ** z)
+            def world(la, lo):
+                la = max(-85.0, min(85.0, float(la)))
+                return ((float(lo) + 180) / 360 * scale,
+                        (0.5 - math.log(math.tan(math.pi / 4 + la * math.pi / 360)) / (2 * math.pi)) * scale)
+            cx, cy = world(center["lat"], center["lon"])
+            px, py = world(lat, lon)
+            return px - cx + img.width / 2, py - cy + img.height / 2
+
+        if map_report:
+            outlet = geo.get("outlet") or {}
+            if outlet.get("lat") is not None and outlet.get("lon") is not None:
+                p = project(outlet["lat"], outlet["lon"])
+                if p:
+                    marker(p[0], p[1], "#FF3C3C", "1")
+            for i, m in enumerate(payload.get("marks") or []):
+                p = project(m.get("lat"), m.get("lon")) if m.get("lat") is not None else None
+                if p:
+                    marker(p[0], p[1], m.get("color"), str(i + 2))
+            for line in payload.get("drawings") or []:
+                pts = [project(p.get("lat"), p.get("lon")) for p in line.get("points") or []]
+                pts = [q for q in pts if q]
+                if len(pts) > 1:
+                    d.line(pts, fill=color(line.get("color")), width=max(2, round(3 * sx)), joint="curve")
+        else:
+            for line in payload.get("photo_drawings") or []:
+                pts = [(float(p["x"]) * sx, float(p["y"]) * sy) for p in line.get("points") or []]
+                if len(pts) > 1:
+                    d.line(pts, fill=color(line.get("color")), width=max(2, round(3 * sx)), joint="curve")
+            for i, m in enumerate(payload.get("photo_marks") or []):
+                marker(float(m.get("x", 0)) * sx, float(m.get("y", 0)) * sy,
+                       m.get("color"), "M" + str(i + 1))
+            seed = payload.get("seed") or {}
+            if seed.get("x") is not None:
+                marker(float(seed["x"]) * sx, float(seed["y"]) * sy, "#FF3C3C", "1")
+        return img
+
     def _render_scene_image(max_side=1400, force_overlay=False):
         img = scene.convert("RGB")
         if max(img.size) > max_side:
             k = max_side / max(img.size)
             img = img.resize((max(1, round(img.width * k)),
                               max(1, round(img.height * k))), Image.LANCZOS)
-        return _stamp_coordinates(img)
+        return _stamp_coordinates(_draw_report_marks(img))
 
     ctx = SimpleNamespace(
         image_path=payload.get("source_name") or "—",

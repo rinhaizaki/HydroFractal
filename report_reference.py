@@ -212,7 +212,7 @@ def write_report(self, path):
     def fig_legend(items):
         """Легенда рисунка 2: створ, подписанные метки, линия маски."""
         legend_style = ParagraphStyle(
-            "fig_legend", parent=note, fontSize=9, leading=12,
+            "fig_legend", parent=note, fontSize=10, leading=13,
             firstLineIndent=0, alignment=TA_LEFT)
         cells = []
         for item in items:
@@ -228,15 +228,16 @@ def write_report(self, path):
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
             ]))
             cells.append(cell)
-        per_row = 3
+        per_row = 2
         rows = [cells[i:i + per_row] for i in range(0, len(cells), per_row)]
         t = Table(rows, colWidths=[16.3 * cm / per_row] * per_row)
         t.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 2),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-            ("TOPPADDING", (0, 0), (-1, -1), 1),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#888888")),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ]))
         return t
 
@@ -854,12 +855,29 @@ def write_report(self, path):
             coord_lines.append(from_params("Масштаб карты"))
     report_marks = (getattr(self, "marks", None) if map_report
                     else getattr(self, "photo_marks", None)) or []
+    def fmt_coord(value, nd=5):
+        try:
+            return f"{float(value):.{nd}f}".replace(".", ",")
+        except (TypeError, ValueError):
+            return "—"
+
+    outlet = geo.get("outlet") or {}
+    seed = getattr(self, "seed_xy", None)
+    outlet_coord = ""
+    if map_report and outlet.get("lat") is not None:
+        outlet_coord = (f" ({fmt_coord(outlet['lat'])}° N, "
+                        f"{fmt_coord(outlet['lon'])}° E)")
+    elif seed:
+        outlet_coord = f" (x={int(seed[0])}, y={int(seed[1])})"
     legend_items = [
-        {"color": "#FF3C3C", "label": "маркер «1» — створ", "kind": "dot"},
+        {"color": "#FF3C3C", "label": f"маркер «1» — створ{outlet_coord}", "kind": "dot"},
         *[{
             "color": m.get("color") or "#5F0001",
-            "label": f"{i + 2 if map_report else 'M' + str(i + 1)} — "
-                     f"{m.get('label') or 'без подписи'}",
+            "label": (f"{i + 2} — {m.get('label') or 'без подписи'} "
+                      f"({fmt_coord(m.get('lat'))}° N, {fmt_coord(m.get('lon'))}° E)"
+                      if map_report else
+                      f"M{i + 1} — {m.get('label') or 'без подписи'} "
+                      f"(x={int(m.get('x') or 0)}, y={int(m.get('y') or 0)} px)"),
             "kind": "dot"
         } for i, m in enumerate(report_marks)],
         {"color": "#28DC50", "label": "линия маски реки", "kind": "line"},

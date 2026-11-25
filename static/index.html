@@ -11,7 +11,7 @@
       /[?&]static=1/.test(location.search);
   </script>
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css?v=1">
-  <link rel="stylesheet" href="styles.css?v=10">
+  <link rel="stylesheet" href="styles.css?v=11">
 </head>
 <body>
 <div class="app-shell">
@@ -89,10 +89,15 @@
     <!-- ---------- вкладка «Фотоснимок» ---------- -->
     <section class="panel active" id="panel-photo" role="tabpanel">
   <!-- ======================== ИНСТРУМЕНТЫ ======================== -->
-  <div class="toolbars">
-    <details class="tool-group" open>
-      <summary>Снимок и выделение</summary>
-    <div class="toolbar">
+  <div class="toolbars ribbon">
+    <div class="ribbon-tabs" role="tablist">
+        <button class="ribbon-tab active" data-ribbon-tab="photo-basic" role="tab" aria-selected="true">Снимок и выделение</button>
+        <button class="ribbon-tab" data-ribbon-tab="photo-tools" role="tab" aria-selected="false">Инструменты и правка маски</button>
+        <button class="ribbon-tab" data-ribbon-tab="photo-view" role="tab" aria-selected="false">Ориентация, обрезка, сетка и масштаб</button>
+    </div>
+    <div class="ribbon-panels">
+        <div class="ribbon-panel active" data-ribbon-panel="photo-basic" role="tabpanel">
+          <div class="toolbar">
       <button class="btn primary" id="btnLoad">📂 Загрузить снимок</button>
       <span class="sep"></span>
       <label class="field-label" for="method">Способ выделения:</label>
@@ -107,10 +112,9 @@
       <label class="check"><input type="checkbox" id="largest" checked> Только крупнейшая область воды</label>
     </div>
     </details>
-
-    <details class="tool-group" open>
-      <summary>Инструменты и правка маски</summary>
-    <div class="toolbar">
+        </div>
+        <div class="ribbon-panel" data-ribbon-panel="photo-tools" role="tabpanel">
+          <div class="toolbar">
       <label class="field-label" for="tool">Инструмент:</label>
       <select id="tool" class="select tool-select">
         <option value="point">🖱 Точка расхода (створ) — выбрать реку</option>
@@ -134,10 +138,9 @@
       </select>
     </div>
     </details>
-
-    <details class="tool-group">
-      <summary>Ориентация, обрезка, сетка и масштаб</summary>
-    <div class="toolbar">
+        </div>
+        <div class="ribbon-panel" data-ribbon-panel="photo-view" role="tabpanel">
+          <div class="toolbar">
       <span class="field-label">Ориентация:</span>
       <button class="btn small" data-rotate="rot1" title="Повернуть против часовой стрелки">⟲ 90°</button>
       <button class="btn small" data-rotate="rot3" title="Повернуть по часовой стрелке">⟳ 90°</button>
@@ -158,6 +161,8 @@
       <button class="btn small" id="btnMinimap">🗺 Карта</button>
     </div>
     </details>
+        </div>
+    </div>
   </div>
 
       <div class="workspace">
@@ -166,7 +171,8 @@
             <button class="btn accent" id="btnSegment">🌊 Выделить реку</button>
             <button class="btn accent" id="btnAnalyze">📐 Рассчитать D</button>
             <input type="text" id="photoMarkLabel" class="mark-label" placeholder="Подпись метки на фото" size="14" title="Подпись для следующей метки на фото">
-            <input type="color" id="photoMarkColor" value="#5F0001" title="Цвет новых меток на фото">
+            <input type="color" id="photoMarkColor" value="#5F0001" title="Цвет меток и рисунков-заметок на фото">
+            <button class="btn small" id="btnPhotoDrawFree" title="Рисовать цветные заметки, привязанные к пикселям снимка">✏ Рисовать</button>
             <button class="btn small" id="btnPhotoMark" title="Режим меток на фото: кликните по снимку, чтобы поставить метку">📌 Метка на фото</button>
             <label class="field-label" for="viewMode">Вид:</label>
             <select id="viewMode" class="select">
@@ -263,7 +269,7 @@
         </select>
         <button class="btn small" id="btnNdwi" title="Показать или скрыть слой NDWI по Sentinel-2">💧 NDWI</button>
         <button class="btn small" id="btnWaterSelect" title="Выделить водные объекты по порогу NDWI">🎯 Вода</button>
-        <input type="range" id="ndwiThreshold" class="range short" min="-25" max="40" value="-25" step="1" title="Порог NDWI: −0,25 … 0,40">
+        <input type="range" id="ndwiThreshold" class="range short" min="-100" max="100" value="-25" step="1" title="Порог NDWI: −1,00 … +1,00">
         <span class="field-label" id="ndwiValue">NDWI ≥ −0,25</span>
           </div>
         </details>
@@ -316,7 +322,7 @@
             </div>
           </div>
           <div class="canvas-foot map-foot">
-            <span id="mapCredit">Карта: Esri · ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM), резерв — Terrarium</span>
+            <span id="mapCredit">Карта: Esri · ЦМР: USGS EarthExplorer (NASADEM/SRTM), резерв — Copernicus DEM, Terrarium</span>
             <span id="mapZoom">z11 · 114 м/пиксель</span>
           </div>
           <div class="marks-panel" id="marksPanel">
@@ -387,7 +393,7 @@
 <div class="toast" id="toast" hidden></div>
 
 <script src="vendor/leaflet/leaflet.js?v=1"></script>
-<script src="client-core.js?v=14"></script>
-<script src="app.js?v=17"></script>
+<script src="client-core.js?v=15"></script>
+<script src="app.js?v=18"></script>
 </body>
 </html>

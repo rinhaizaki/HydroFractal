@@ -37,7 +37,7 @@ python map_app.py
 |---|---|---|
 | Спутниковый снимок | Sentinel-2 L2A через Planetary Computer STAC + TiTiler | Открытые данные Copernicus, нужна атрибуция |
 | Резервный снимок | Esri World Imagery (Maxar, Earthstar) | Бесплатно для некоммерческого использования, нужна атрибуция |
-| Высоты рельефа | Copernicus DEM GLO-30 через Planetary Computer TiTiler; запасной источник — NASADEM через PC | Открытые данные Copernicus / NASA, ~30 м |
+| Высоты рельефа | NASADEM/SRTM (архив USGS EarthExplorer) через Planetary Computer; запасной — Copernicus DEM GLO-30, затем Terrarium | Открытые данные USGS/NASA, ~30 м |
 
 Атрибуция показана внизу окна карты — это требование лицензий,
 не убирайте её.
@@ -50,10 +50,10 @@ python map_app.py
 Внутри тайла лежат цвета палитры, а не числа высот. Из неё нельзя
 получить массив высот, а без него водосбор не построить.
 
-Поэтому высоты берутся из **Copernicus DEM GLO-30** через Planetary
-Computer (TiTiler); если сервис возвращает 500, приложение автоматически
-переключается на **NASADEM** из Planetary Computer, а при необходимости —
-на обычные terrarium-тайлы с настоящими высотами: одноканальный DEM кодируется в PNG с lin. шкалой
+Поэтому высоты берутся из **NASADEM/SRTM** — данные USGS EarthExplorer,
+опубликованные через Planetary Computer. Если сервис возвращает ошибку,
+приложение переключается на **Copernicus DEM GLO-30**, а затем на обычные
+terrarium-тайлы с настоящими высотами: одноканальный DEM кодируется в PNG с lin. шкалой
 −1000…4000 м. Программа декодирует метры из красной компоненты:
 `h = −1000 + R/255 · 5000`.
 
