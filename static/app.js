@@ -46,7 +46,7 @@
       img: null, geo: null, outlet: null, result: null, info: null,
       credit: 'Карта: Esri · Рельеф: AWS Terrain Tiles', demo: false, cell: 0,
       panDx: 0, panDy: 0, dragStart: null, moved: false, loading: false,
-      tiles: [], reliefImg: null, overlayImg: null, reportImage: null
+      tiles: [], reliefImg: null, overlayImg: null, reportImage: null, mask: null, width: 0, height: 0
     }
   };
 
@@ -810,6 +810,9 @@
       S.map.demo = !!resp.demo;
       S.map.tiles = resp.tiles || S.map.tiles;
       S.map.reportImage = resp.image;
+      S.map.mask = resp.mask || null;
+      S.map.width = resp.width || 0;
+      S.map.height = resp.height || 0;
       if (resp.relief && !S.map.reliefImg) {
         S.map.reliefImg = await loadImage(resp.relief);
       }
@@ -836,6 +839,8 @@
         title: 'Анализ реки по карте и рельефу',
         source_name: 'карта и водосбор', method: 'color', tol: 0,
         object: 'skeleton', max_divs: 60, color_pts: [], mask_touched: false,
+        width: S.map.width || undefined, height: S.map.height || undefined,
+        mask: S.map.mask,
         params: [
           ['Источник карты', S.map.source === 'esri' ? 'Esri World Imagery' : 'OpenTopoMap'],
           ['Рельеф', S.map.relief ? 'отмывка включена' : 'не показывалась'],
