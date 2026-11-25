@@ -30,7 +30,6 @@
     status: $('status'), statusRight: $('statusRight'),
     toast: $('toast'), modal: $('modal'), modalTitle: $('modalTitle'), modalBody: $('modalBody'),
     confirmModal: $('confirmModal'), confirmTitle: $('confirmTitle'), confirmText: $('confirmText'),
-    screenshotShield: $('screenshotShield'),
     fileInput: $('fileInput')
   };
 
@@ -47,6 +46,7 @@
     result: null, waterPixels: 0, waterShare: 0, minimapVisible: false, maskNonEmpty: false,
     overlayDataURL: null, maskTouched: false, cropped: false,
     crop: { active: false, start: null, end: null, ready: false, handle: null, dragOrigin: null },
+    photoMarks: [], photoMarkMode: false,
     mapTabLoaded: false, activeTab: 'photo',
     map: {
       lon: 30.33510, lat: 59.93428, zoom: 11, source: 'sentinel', relief: false,
@@ -54,13 +54,13 @@
       ndwiLayer: null, ndwiOn: false,
       waterLayer: null, waterImageLayer: null, markLayer: null, waterObjects: [],
       img: null, geo: null, outlet: null, result: null, info: null,
-      credit: 'Sentinel-2 L2A: Copernicus / Planetary Computer · ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM)', demo: false, cell: 0,
+      credit: 'Sentinel-2 L2A: Copernicus / Planetary Computer · ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM), резерв — Terrarium', demo: false, cell: 0,
       panDx: 0, panDy: 0, dragStart: null, moved: false, loading: false,
       tiles: [], reliefImg: null, overlayImg: null, reportImage: null, mask: null, width: 0, height: 0,
       minimapVisible: false, miniKey: '', miniResp: null,
       leaflet: null, tileLayer: null, layerIndex: 0, tileErrors: 0,
       marks: [], markMode: false, viewMode: 'overlay',
-      drawings: [], drawMode: false, drawCurrent: null, drawLayer: null,
+      drawings: [], drawMode: false, drawCurrent: null, drawLayer: null, drawColor: '#5F0001',
       leafletCredit: 'Sentinel-2 L2A: Copernicus / Planetary Computer',
       overlayGeo: null, reliefGeo: null, moveTimer: null
     }
@@ -94,39 +94,6 @@
   function closeConfirm(answer) {
     el.confirmModal.hidden = true;
     if (confirmResolve) { const done = confirmResolve; confirmResolve = null; done(!!answer); }
-  }
-  function initScreenshotGuard() {
-    const flash = () => {
-      el.screenshotShield.hidden = false;
-      setTimeout(() => { el.screenshotShield.hidden = true; }, 1400);
-    };
-    document.addEventListener('contextmenu', (e) => e.preventDefault());
-    document.addEventListener('copy', (e) => e.preventDefault());
-    document.addEventListener('cut', (e) => e.preventDefault());
-    document.addEventListener('dragstart', (e) => e.preventDefault());
-    document.addEventListener('selectstart', (e) => {
-      if (!e.target || !e.target.closest || !e.target.closest('.leaflet-container, .report, input, textarea')) {
-        e.preventDefault();
-      }
-    });
-    window.addEventListener('beforeprint', () => { el.screenshotShield.hidden = false; });
-    window.addEventListener('afterprint', () => { el.screenshotShield.hidden = true; });
-    document.addEventListener('keydown', (e) => {
-      const k = (e.key || '').toLowerCase();
-      const typed = e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName || '');
-      if (e.key === 'PrintScreen' || e.keyCode === 44 ||
-          (e.ctrlKey && (k === 'p' || k === 's' || k === 'c')) ||
-          (e.shiftKey && e.ctrlKey && ['i', 'j', 'c'].includes(k)) ||
-          (k === 'f12' && !typed)) {
-        e.preventDefault();
-        flash();
-      }
-    });
-    document.addEventListener('visibilitychange', () => {
-      el.screenshotShield.hidden = !document.hidden;
-    });
-    window.addEventListener('blur', () => { el.screenshotShield.hidden = false; });
-    window.addEventListener('focus', () => { el.screenshotShield.hidden = true; });
   }
   function loadImage(src) {
     return new Promise((resolve, reject) => {
@@ -346,6 +313,38 @@
   function imageToScreen(pt, t) {
     return { x: t.dx + pt.x * t.scale, y: t.dy + pt.y * t.scale };
   }
+  function renderPhotoMarksList() {
+    const box = $('photoMarksList');
+    if (!box) return;
+    if (!S.photoMarks.length) {
+      box.innerHTML = '<div class="note">Меток на фото пока нет. Включите «Метка на фото» ' +
+        'и кликните по снимку — метка появится в этом списке.</div>';
+      return;
+    }
+    box.innerHTML = S.photoMarks.map((m, i) => `
+      <div class="mark-row" data-photo-mark="${i}">
+        <span class="mark-num">M${i + 1}.</span>
+        <input type="text" class="mark-name" value="${escHtml(m.label)}" aria-label="Название метки ${i + 1}">
+        <span class="mark-coord">x=${Math.round(m.x)}, y=${Math.round(m.y)} px</span>
+        <button class="btn small" data-mark-act="rename">Сохранить</button>
+        <button class="btn small" data-mark-act="goto">К точке</button>
+        <button class="btn small" data-mark-act="delete">Удалить</button>
+      </div>`).join('');
+  }
+  function addPhotoMark(pt) {
+    const label = ($('photoMarkLabel').value || '').trim() || `Метка ${S.photoMarks.length + 1}`;
+    S.photoMarks.push({ x: pt.x, y: pt.y, label });
+    $('photoMarkLabel').value = '';
+    renderPhotoMarksList(); renderPhoto();
+    status(`Метка на фото «${label}»: x=${Math.round(pt.x)}, y=${Math.round(pt.y)} px.`);
+  }
+  function togglePhotoMark() {
+    S.photoMarkMode = !S.photoMarkMode;
+    $('btnPhotoMark').classList.toggle('selected-accent', S.photoMarkMode);
+    status(S.photoMarkMode
+      ? 'Метки на фото: кликайте по снимку, чтобы поставить метку.'
+      : 'Режим меток на фото выключен.');
+  }
   function drawPhotoMarkers(ctx, t) {
     const marker = (pt, color, label) => {
       const p = imageToScreen(pt, t);
@@ -363,6 +362,7 @@
     };
     S.colorPoints.forEach((p, i) => marker(p, '#F5CD46', String(i + 2)));
     if (S.seed) marker(S.seed, '#FF3C3C', '1');
+    S.photoMarks.forEach((m, i) => marker(m, '#5F0001', `M${i + 1} ${m.label}`));
   }
   function renderPhoto() {
     const { ctx, w, h } = prepCanvas(el.photoCanvas);
@@ -675,7 +675,7 @@
     S.crop.ready = false; S.crop.handle = null; S.crop.dragOrigin = null;
     setCropControls(false);
     $('btnCrop').classList.remove('selected-accent');
-    S.seed = null; S.colorPoints = []; S.result = null; S.waterPixels = 0; S.waterShare = 0;
+    S.seed = null; S.colorPoints = []; S.photoMarks = []; S.result = null; S.waterPixels = 0; S.waterShare = 0;
     S.overlayDataURL = null; S.maskTouched = false;
     if (!keepHistory) { S.undo.length = 0; S.redo.length = 0; updateHistoryButtons(); }
     resetView();
@@ -781,7 +781,6 @@
     buildTable(result.table || [], el.tableWrap, ['n', 'ε, px', 'N(ε)']);
     buildTable((stream.qp || []).map((p) => [fmt(p.p, 1) + ' %', fmt(p.k, 4), fmt(p.q, 2)]),
       el.streamWrap, ['Обеспеченность P', 'Kp', 'Qp, м³/с']);
-    renderSp33(stream, 'sp33Wrap');
   }
   function renderSp33(stream, wrapId) {
     const wrap = $(wrapId);
@@ -814,6 +813,7 @@
       width: S.W, height: S.H,
       seed: S.seed, seed_rgb: seedRgbAt(S.seed),
       color_pts: S.colorPoints,
+      photo_marks: S.photoMarks.map((m) => ({ x: Math.round(m.x), y: Math.round(m.y), label: m.label })),
       method: $('method').value, tol: Number($('tolNum').value),
       object: $('object').value, max_divs: Number($('maxDivsNum').value),
       mask_touched: S.maskTouched,
@@ -827,6 +827,7 @@
         ['Допуск по цвету', $('tolNum').value],
         ['Точка створа', S.seed ? `x=${Math.round(S.seed.x)}, y=${Math.round(S.seed.y)}` : 'не задана'],
         ['Доп. точки цвета', String(S.colorPoints.length)],
+        ['Метки на фото', S.photoMarks.map((m) => `${m.label} (${Math.round(m.x)}, ${Math.round(m.y)})`).join('; ') || 'нет'],
         ['Объект расчёта', $('object').selectedOptions[0].text],
         ['Число делений сетки', $('maxDivsNum').value],
         ['Пикселей воды', String(S.waterPixels)],
@@ -1371,7 +1372,7 @@
       S.map.drawLayer.clearLayers();
       S.map.drawings.forEach((line) => {
         L.polyline(line.map((p) => [p.lat, p.lon]), {
-          color: '#5F0001', weight: 3, opacity: 0.9
+          color: S.map.drawColor, weight: 3, opacity: 0.9
         }).addTo(S.map.drawLayer);
       });
     }
@@ -1395,7 +1396,7 @@
     if (!geo || !S.map.drawings.length) return;
     const rect = el.mapCanvas.getBoundingClientRect();
     ctx.save();
-    ctx.strokeStyle = '#5F0001'; ctx.lineWidth = 3;
+    ctx.strokeStyle = S.map.drawColor; ctx.lineWidth = 3;
     S.map.drawings.forEach((line) => {
       ctx.beginPath();
       line.forEach((p, i) => {
@@ -1440,7 +1441,7 @@
       drawMapMarks(ctx, geo, true);
       drawMapLines(ctx, geo);
       el.mapCredit.textContent = S.map.leafletCredit +
-        ' · ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM)' +
+        ' · ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM), резерв — Terrarium' +
         (S.map.demo ? ' · демо-рельеф (нет сети)' : '');
       el.mapZoom.textContent = `z${S.map.zoom} · ${fmt(S.map.cell, 1)} м/пиксель`;
       if (S.map.minimapVisible) renderMapMinimap();
@@ -1644,7 +1645,6 @@
     el.mapReport.textContent = lines.join('\n');
     if (r.plot) { el.mapPlot.src = r.plot; el.mapPlot.hidden = false; el.mapPlotEmpty.hidden = true; }
     buildTable(r.table || [], el.mapTableWrap, ['n', 'ε, px', 'N(ε)']);
-    renderSp33(st, 'mapSp33Wrap');
     setBadge('mapBadge', 'готово', 'ok');
   }
   async function mapAnalyze() {
@@ -1689,6 +1689,31 @@
     if (!S.map.geo) { toast('Карта ещё загружается.'); return false; }
     return true;
   }
+  function captureMapForReport() {
+    const rect = el.mapCanvas.getBoundingClientRect();
+    const w = Math.max(240, Math.round(rect.width));
+    const h = Math.max(180, Math.round(rect.height));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
+    let tiles = 0;
+    if (S.map.leaflet && el.leafletWrap) {
+      const host = el.leafletWrap.getBoundingClientRect();
+      el.leafletWrap.querySelectorAll('img.leaflet-tile').forEach((img) => {
+        const r = img.getBoundingClientRect();
+        if (!r.width || !r.height || !img.complete) return;
+        try {
+          ctx.drawImage(img, r.left - host.left, r.top - host.top, r.width, r.height);
+          tiles++;
+        } catch (e) { /* тайл ещё грузится */ }
+      });
+    }
+    if (S.map.overlayImg) {
+      try { ctx.drawImage(S.map.overlayImg, 0, 0, w, h); } catch (e) { /* ignore */ }
+    }
+    return tiles ? c.toDataURL('image/jpeg', 0.92) : null;
+  }
   async function mapSavePdf() {
     if (!S.map.result) { toast('Сначала постройте водосбор и рассчитайте D.'); return; }
     const r = S.map.result, m = S.map.info || {};
@@ -1712,7 +1737,8 @@
           ['Водных объектов по NDWI', String((S.map.waterObjects || []).length)]
         ],
         result: r, table: r.table || [], stream: r.stream || {},
-        plot: r.plot, image: S.map.reportImage || (S.map.img ? S.map.img.src : null),
+        plot: r.plot,
+        image: captureMapForReport() || S.map.reportImage || (S.map.img ? S.map.img.src : null),
         marks: S.map.marks.map((m) => ({ lat: m.lat, lon: m.lon, label: m.label }))
       }, 'gidrofraktal-map-report.pdf');
       status('PDF-отчёт по карте сохранён.');
@@ -1785,6 +1811,22 @@
     $('btnZoomOut').addEventListener('click', () => zoomAt(1 / 1.25));
     $('btnZoomFit').addEventListener('click', resetView);
     $('btnMinimap').addEventListener('click', toggleMinimap);
+    $('btnPhotoMark').addEventListener('click', togglePhotoMark);
+    $('photoMarksList').addEventListener('click', (e) => {
+      const row = e.target.closest('.mark-row');
+      if (!row) return;
+      const i = Number(row.dataset.photoMark);
+      const act = e.target.dataset.markAct;
+      if (act === 'rename') {
+        const input = row.querySelector('.mark-name');
+        if (input && input.value.trim()) { S.photoMarks[i].label = input.value.trim(); }
+      } else if (act === 'delete') S.photoMarks.splice(i, 1);
+      else if (act === 'goto') {
+        const m = S.photoMarks[i];
+        if (m) { S.cx = m.x; S.cy = m.y; clampView(); }
+      }
+      renderPhotoMarksList(); renderPhoto();
+    });
     $('btnPhotoDraw').addEventListener('click', () => {
       $('tool').value = 'brush'; S.tool = 'brush'; setStatusForTool(); renderPhoto();
       status('Кисть включена: рисуйте выделение воды прямо на снимке.');
@@ -1806,8 +1848,14 @@
     el.photoCanvas.addEventListener('pointerdown', (e) => {
       if (!S.image) return;
       const rect = el.photoCanvas.getBoundingClientRect();
+      const clicked = screenToImage(e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
+      if (S.photoMarkMode && clicked.x >= 0 && clicked.y >= 0 &&
+          clicked.x < S.W && clicked.y < S.H) {
+        addPhotoMark(clicked);
+        return;
+      }
       if (S.crop.active) {
-        const pt = screenToImage(e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
+        const pt = clicked;
         const hit = S.crop.ready ? cropHit(pt) : null;
         if (hit) {
           S.crop.handle = hit;
@@ -1946,6 +1994,10 @@
     $('btnMapMinimap').addEventListener('click', toggleMapMinimap);
     $('btnMapMark').addEventListener('click', toggleMapMark);
     $('btnMapMarkCoord').addEventListener('click', addMapMarkByCoords);
+    $('drawColor').addEventListener('input', (e) => {
+      S.map.drawColor = e.target.value;
+      rebuildDrawLayer();
+    });
     $('btnMapDraw').addEventListener('click', toggleMapDraw);
     $('btnMapDrawClear').addEventListener('click', clearMapDrawings);
     $('btnMapClearMarks').addEventListener('click', clearMapMarks);
@@ -2237,8 +2289,7 @@
       Φ<sub>P</sub> = z<sub>P</sub> + (C<sub>s</sub>/6)(z<sub>P</sub>² − 1),
       Q<sub>P</sub> = k<sub>p</sub>·Q<sub>ср</sub>. В программу заложена расчётная
       таблица k<sub>p</sub> приложения Ж для стандартных отношений
-      C<sub>s</sub>/C<sub>v</sub> = 0; 0,5; 1; 1,5; 2; 3 — она показывается в
-     результатах расчёта (блок «СП 33-101-2003 — таблица k<sub>p</sub>») и включается
+      C<sub>s</sub>/C<sub>v</sub> = 0; 0,5; 1; 1,5; 2; 3 — она включается
       в PDF как таблица 6.</p>
       <h2>6. Что именно делает каждая кнопка и поле</h2>
       <table>
@@ -2293,8 +2344,7 @@
         программы. Карта использует Sentinel-2 L2A (Copernicus) и ЦМР Copernicus
         DEM GLO-30 через Planetary Computer (STAC + TiTiler), а также выделение
         водных объектов по NDWI из каналов B03 и B08.</p>
-        <p>Копирование, печать и контекстное меню ограничены. Полностью запретить
-        снимок экрана веб-страница не может — это делает операционная система.</p>`)
+`)
     };
     if (actions[act]) actions[act]();
   }
@@ -2509,13 +2559,16 @@ N(ε) на малых размерах ячеек и завышают D.
   const DEFAULT_TIPS = {
     btnCropApply: 'Применить выбранную область обрезки. До нажатия снимок не меняется — рамку можно тянуть и редактировать.',
     btnCropCancel: 'Отменить правку обрезки: снимок останется прежним.',
-    btnPhotoDraw: 'Кисть: рисуйте выделение воды прямо на снимке; ластик удаляет лишнее.',
+    btnPhotoMark: 'Режим меток на фото: кликните по снимку, чтобы поставить подписанную метку.',
+    photoMarkLabel: 'Подпись следующей метки на фото.',
+    btnPhotoDraw: 'Кисть маски: дорисовывает выделение воды на снимке; ластик удаляет лишнее.',
     mapViewMode: 'Что показывать после построения водосбора: подложку вместе с маской, только спутник или только маску водосбора и речной сети.',
     markLat: 'Широта новой метки в градусах (−85…85).',
     markLon: 'Долгота новой метки в градусах (−180…180).',
     btnMapMarkCoord: 'Поставить метку по введённым координатам и центрировать на ней карту.',
-    btnMapDraw: 'Режим свободного рисования поверх карты: ведите линию ЛКМ, как в ГИС.',
-    btnMapDrawClear: 'Удалить все нарисованные на карте линии.',
+    btnMapDraw: 'Рисование на карте произвольным цветом — заметки для себя, не выделение реки.',
+    btnMapDrawClear: 'Удалить все цветные заметки-линии с карты.',
+    drawColor: 'Цвет линий-заметок на карте.',
     btnMapCatch: 'Построить предварительную область водосбора и речную сеть по ЦМР.',
     btnMapDim: 'Рассчитать фрактальную размерность главного русла по методу квадратов Кантора.',
     btnMapPdf: 'Сформировать PDF-отчёт по карте, водосбору и руслу.',
@@ -2540,7 +2593,6 @@ N(ε) на малых размерах ячеек и завышают D.
 
   // ------------------------------------------------------------------- init
   function init() {
-    initScreenshotGuard();
     if ($('ndwiValue')) {
       const upd = () => {
         const v = Number(el.ndwiThreshold.value) / 100;
@@ -2551,21 +2603,19 @@ N(ε) на малых размерах ячеек и завышают D.
     }
     initTooltips();
     renderMarksList();
+    renderPhotoMarksList();
     setStatusForTool();
     bindEvents();
     renderPhoto();
     updateHistoryButtons();
     if (STATIC_MODE) {
-      $('onlineText').textContent = 'расчёты в браузере';
       status('Статический режим: все расчёты выполняются в браузере (GitHub Pages).');
     } else {
       fetch('/api/health').then((r) => r.json()).then((d) => {
         if (d.ok) {
-          $('onlineText').textContent = 'сервер готов';
         } else throw new Error('health check');
       }).catch(() => {
         $('onlineDot').classList.add('err');
-        $('onlineText').textContent = 'сервер недоступен';
       });
     }
   }

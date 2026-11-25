@@ -11,7 +11,7 @@
       /[?&]static=1/.test(location.search);
   </script>
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css?v=1">
-  <link rel="stylesheet" href="styles.css?v=8">
+  <link rel="stylesheet" href="styles.css?v=9">
 </head>
 <body>
 <div class="app-shell">
@@ -76,12 +76,13 @@
 
     <div class="top-right">
       <span class="online-dot" id="onlineDot" title="Состояние сервера"></span>
-      <span id="onlineText">сервер готов</span>
     </div>
   </header>
 
   <!-- ======================== ИНСТРУМЕНТЫ ======================== -->
   <div class="toolbars">
+    <details class="tool-group" open>
+      <summary>Снимок и выделение</summary>
     <div class="toolbar">
       <button class="btn primary" id="btnLoad">📂 Загрузить снимок</button>
       <span class="sep"></span>
@@ -96,7 +97,10 @@
       <input type="number" id="tolNum" min="1" max="180" value="60" class="num">
       <label class="check"><input type="checkbox" id="largest" checked> Только крупнейшая область воды</label>
     </div>
+    </details>
 
+    <details class="tool-group" open>
+      <summary>Инструменты и правка маски</summary>
     <div class="toolbar">
       <label class="field-label" for="tool">Инструмент:</label>
       <select id="tool" class="select tool-select">
@@ -109,7 +113,7 @@
       <label class="field-label" for="brush">Размер ластика/кисти:</label>
       <input type="range" id="brush" min="2" max="80" value="18" class="range">
       <input type="number" id="brushNum" min="2" max="120" value="18" class="num">
-      <button class="btn small" id="btnPhotoDraw" title="Кисть: рисуйте выделение воды прямо на снимке">✏ Рисовать</button>
+      <button class="btn small" id="btnPhotoDraw" title="Кисть маски: дорисовывает выделение воды на снимке">🖌 Кисть маски</button>
       <span class="sep"></span>
       <button class="btn" id="btnUndo" title="Ctrl+Z" disabled>↶ Назад</button>
       <button class="btn" id="btnRedo" title="Ctrl+Y" disabled>↷ Вперёд</button>
@@ -120,7 +124,10 @@
         <option value="mask">Заполненная маска</option>
       </select>
     </div>
+    </details>
 
+    <details class="tool-group">
+      <summary>Ориентация, обрезка, сетка и масштаб</summary>
     <div class="toolbar">
       <span class="field-label">Ориентация:</span>
       <button class="btn small" data-rotate="rot1" title="Повернуть против часовой стрелки">⟲ 90°</button>
@@ -141,6 +148,7 @@
       <button class="btn small" id="btnZoomFit">⛶ Всё</button>
       <button class="btn small" id="btnMinimap">🗺 Карта</button>
     </div>
+    </details>
   </div>
 
   <!-- ========================== ВКЛАДКИ ========================== -->
@@ -157,6 +165,8 @@
           <div class="action-row">
             <button class="btn accent" id="btnSegment">🌊 Выделить реку</button>
             <button class="btn accent" id="btnAnalyze">📐 Рассчитать D</button>
+            <input type="text" id="photoMarkLabel" class="mark-label" placeholder="Подпись метки на фото" size="14" title="Подпись для следующей метки на фото">
+            <button class="btn small" id="btnPhotoMark" title="Режим меток на фото: кликните по снимку, чтобы поставить метку">📌 Метка на фото</button>
             <label class="field-label" for="viewMode">Вид:</label>
             <select id="viewMode" class="select">
               <option value="overlay">Снимок + маска</option>
@@ -170,6 +180,10 @@
             Важно: оставьте выделенной только ту часть реки, которая <b>ВЫШЕ створа</b>
             (точка 1). Всё ниже по течению сотрите «🧹 Ластиком» — иначе расчёт D будет неверным.
           </p>
+          <div class="marks-panel" id="photoMarksPanel">
+            <div class="marks-head">Метки на фото <span class="note">— переименуйте, удалите или перейдите к точке</span></div>
+            <div id="photoMarksList"></div>
+          </div>
           <div class="canvas-wrap" id="photoWrap">
             <canvas id="photoCanvas"></canvas>
             <div class="placeholder" id="photoPlaceholder">
@@ -224,17 +238,16 @@
             <summary>Характеристики стока по D</summary>
             <div class="table-scroll" id="streamWrap"></div>
           </details>
-          <details id="sp33Details">
-            <summary>СП 33-101-2003 — таблица k<sub>p</sub></summary>
-            <div class="table-scroll" id="sp33Wrap"></div>
-          </details>
         </aside>
       </div>
     </section>
 
     <!-- ---------- вкладка «Карта и водосбор» ---------- -->
     <section class="panel" id="panel-map" role="tabpanel">
-      <div class="map-toolbar">
+      <div class="map-toolbar grouped">
+        <details class="tool-group" open>
+          <summary>Подложка, вид и слои</summary>
+          <div class="toolbar">
         <label class="field-label" for="mapSource">Слой:</label>
         <select id="mapSource" class="select">
           <option value="sentinel">Sentinel-2 (Copernicus)</option>
@@ -251,6 +264,11 @@
         <button class="btn small" id="btnWaterSelect" title="Выделить водные объекты по порогу NDWI">🎯 Вода</button>
         <input type="range" id="ndwiThreshold" class="range short" min="-25" max="40" value="-25" step="1" title="Порог NDWI: −0,25 … 0,40">
         <span class="field-label" id="ndwiValue">NDWI ≥ −0,25</span>
+          </div>
+        </details>
+        <details class="tool-group" open>
+          <summary>Координаты, метки и рисунки</summary>
+          <div class="toolbar">
         <label class="field-label" for="mapLat">Широта</label>
         <input type="number" id="mapLat" class="num coord-num" value="59.93428" step="0.00001" min="-85" max="85" title="Широта центра карты, градусы">
         <label class="field-label" for="mapLon">Долгота</label>
@@ -262,8 +280,14 @@
         <button class="btn small" id="btnMapMarkCoord" title="Поставить метку по введённым координатам">📍 По координатам</button>
         <button class="btn small" id="btnMapMark" title="Режим меток: кликайте по карте, чтобы оставить отметки">📌 Метка</button>
         <button class="btn small" id="btnMapClearMarks" title="Удалить все метки с карты">🗑 Метки</button>
-        <button class="btn small" id="btnMapDraw" title="Свободное рисование поверх карты (полилиния)">✏ Рисовать</button>
+        <input type="color" id="drawColor" value="#5F0001" title="Цвет для рисунков поверх карты">
+        <button class="btn small" id="btnMapDraw" title="Рисовать произвольные линии на карте выбранным цветом">✏ Рисовать</button>
         <button class="btn small" id="btnMapDrawClear" title="Удалить все рисунки с карты">🗑 Рисунки</button>
+          </div>
+        </details>
+        <details class="tool-group" open>
+          <summary>Навигация, расчёт и отчёт</summary>
+          <div class="toolbar">
         <button class="btn small" id="btnMapHome" title="Вернуться к центру — Санкт-Петербург">⌂</button>
         <button class="btn small" id="btnMapZoomOut" title="Уменьшить масштаб карты">🔍−</button>
         <button class="btn small" id="btnMapZoomIn" title="Увеличить масштаб карты">🔍+</button>
@@ -272,6 +296,8 @@
         <button class="btn accent" id="btnMapDim">📐 Рассчитать D</button>
         <button class="btn" id="btnMapPdf">💾 Отчёт PDF</button>
         <span class="map-coords" id="mapCoords">30.33510° E, 59.93428° N</span>
+          </div>
+        </details>
       </div>
       <div class="map-workspace">
         <div class="map-left">
@@ -289,7 +315,7 @@
             </div>
           </div>
           <div class="canvas-foot map-foot">
-            <span id="mapCredit">Карта: Esri · ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM)</span>
+            <span id="mapCredit">Карта: Esri · ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM), резерв — Terrarium</span>
             <span id="mapZoom">z11 · 114 м/пиксель</span>
           </div>
           <div class="marks-panel" id="marksPanel">
@@ -319,10 +345,6 @@
           <details id="mapTableDetails">
             <summary>Таблица измерений n / ε / N(ε)</summary>
             <div class="table-scroll" id="mapTableWrap"></div>
-          </details>
-          <details id="mapSp33Details">
-            <summary>СП 33-101-2003 — таблица k<sub>p</sub></summary>
-            <div class="table-scroll" id="mapSp33Wrap"></div>
           </details>
         </aside>
       </div>
@@ -358,14 +380,13 @@
   </div>
 </div>
 
-<div class="screenshot-shield" id="screenshotShield" hidden>
-  <div>Снимок экрана заблокирован</div>
+
 </div>
 
 <div class="toast" id="toast" hidden></div>
 
 <script src="vendor/leaflet/leaflet.js?v=1"></script>
-<script src="client-core.js?v=11"></script>
-<script src="app.js?v=13"></script>
+<script src="client-core.js?v=12"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>

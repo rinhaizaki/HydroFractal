@@ -68,7 +68,11 @@ PC_STAC_SEARCH = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
 NASADEM_TILES = ("https://planetarycomputer.microsoft.com/api/data/v1/collections/"
                  "nasadem/items/{item}/tiles/WebMercatorQuad/"
                  "{z}/{x}/{y}@1x?assets=elevation&rescale=-100,4000&format=png")
-TERRAIN_CREDIT = "ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM)"
+# Последний резерв, если оба PC-сервиса DEM недоступны: terrarium-тайлы
+# с настоящими высотаМИ (не синтетика). PC остаётся основным источником.
+TERRARIUM_URL = "https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png"
+TERRAIN_CREDIT = ("ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM), "
+                  "резерв — Terrarium")
 
 UA = {"User-Agent": "Gidrofraktal/1.0 (river fractal analysis)"}
 
@@ -192,7 +196,7 @@ def _decode_dem_png(data, lo, hi=4000.0):
 def fetch_terrain_tile(z, x, y, use_cache=True):
     """Тайл ЦМР Planetary Computer → высоты в метрах (256×256) или None."""
     cpath = _cache_path("dem-pc", z, x, y) if use_cache else None
-    data, lo = None, DEM_RESCALE[0]
+    data, lo, terrarium = None, DEM_RESCALE[0], False
     if cpath and os.path.exists(cpath):
         try:
             with open(cpath, "rb") as f:
@@ -200,11 +204,12 @@ def fetch_terrain_tile(z, x, y, use_cache=True):
         except Exception:
             data = None
     if data is None:
-        for url, low in ((_pc_dem_url(z, x, y), DEM_RESCALE[0]),
-                         (_nasa_dem_url(z, x, y), -100.0)):
+        for url, low, terr in ((_pc_dem_url(z, x, y), DEM_RESCALE[0], False),
+                               (_nasa_dem_url(z, x, y), -100.0, False),
+                               (TERRARIUM_URL.format(z=z, x=x, y=y), 0.0, True)):
             try:
                 data = _http_get(url)
-                lo = low
+                lo, terrarium = low, terr
                 break
             except Exception:
                 continue
@@ -219,6 +224,10 @@ def fetch_terrain_tile(z, x, y, use_cache=True):
             except Exception:
                 pass
     try:
+        if terrarium:
+            im = Image.open(io.BytesIO(data)).convert("RGB")
+            a = np.asarray(im).astype(np.float32)
+            return a[..., 0] * 256.0 + a[..., 1] + a[..., 2] / 256.0 - 32768.0
         return _decode_dem_png(data, lo)
     except Exception:
         return None
