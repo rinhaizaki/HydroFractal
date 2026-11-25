@@ -450,6 +450,34 @@ def api_analyze():
         return jsonify({"ok": False, "error": str(exc) or exc.__class__.__name__}), 400
 
 
+@app.post("/api/mask/png")
+def api_mask_png():
+    """Маска-подложка: чёрная река на белом фоне + метаданные PNG."""
+    try:
+        data = request.get_json(force=True) or {}
+        mask = _bool_mask_from_data_url(data.get("mask", ""))
+        seed = data.get("seed")
+        seed_xy = (float(seed["x"]), float(seed["y"])) if seed else None
+        import tempfile
+        fd, tmp_path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        try:
+            hydro_core.write_mask_png(
+                tmp_path, mask,
+                scale_text=str(data.get("scale_text", "") or ""),
+                image_path=str(data.get("source_name", "") or "unknown"),
+                seed_xy=seed_xy)
+            with open(tmp_path, "rb") as f:
+                png_bytes = f.read()
+        finally:
+            try: os.remove(tmp_path)
+            except OSError: pass
+        return send_file(io.BytesIO(png_bytes), mimetype="image/png",
+                         as_attachment=True, download_name="river_mask.png")
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc) or exc.__class__.__name__}), 400
+
+
 # ---------------------------------------------------------------------------
 # Режим «Карта»
 # ---------------------------------------------------------------------------
