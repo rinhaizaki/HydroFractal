@@ -1263,7 +1263,66 @@
     const tbl = (caption, head, rows, cls) => `<div class="tbl-cap">${escapeHtml(caption)}</div>
       <table class="${cls || ''}"><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead>
       <tbody>${rows.map((row) => '<tr>' + row.map((c) => `<td>${escapeHtml(c)}</td>`).join('') + '</tr>').join('')}</tbody></table>`;
-    return invertMaskDataUrl(payload.mask).then((maskImg) => {
+    // Легенда и координатная метка для рисунка 2.
+    const geo = payload.geo || {};
+    const center = geo.center || {}, outlet = geo.outlet || {};
+    const coordLines = mapReport ? [
+      (Number.isFinite(Number(outlet.lat)) && Number.isFinite(Number(outlet.lon)))
+        ? `Створ: ${Number(outlet.lat).toFixed(5)}° N, ${Number(outlet.lon).toFixed(5)}° E`
+        : (fromParams('Створ', '') ? `Створ: ${fromParams('Створ', '')}` : ''),
+      (Number.isFinite(Number(center.lat)) && Number.isFinite(Number(center.lon)))
+        ? `Центр: ${Number(center.lat).toFixed(5)}° N, ${Number(center.lon).toFixed(5)}° E`
+        : (fromParams('Центр карты', '') ? `Центр: ${fromParams('Центр карты', '')}` : ''),
+      geo.zoom ? `z${geo.zoom}${geo.m_per_px ? ' · ' + ru(geo.m_per_px, 1) + ' м/пиксель' : ''}`
+        : fromParams('Масштаб карты', '')
+    ].filter(Boolean) : [];
+    const legendItems = mapReport ? [
+      ['#4682C8', 'синий — предварительная область водосбора'],
+      ['#9CA75A', 'оливковый — уточнённый водосбор'],
+      ['#8B6431', 'коричневый — речная сеть'],
+      ['#733933', 'бордовый — главное русло'],
+      ['#FF3C3C', 'маркер «1» — створ']
+    ] : [
+      ['#28DC50', 'зелёный — выделенная маска воды'],
+      ['#FF3C3C', 'маркер «1» — створ'],
+      ['#F5CD46', 'жёлтый — дополнительные точки цвета']
+    ];
+    const legendHtml = '<div class="fig-legend">' + legendItems.map(([color, label]) =>
+      `<span><i style="background:${color}"></i>${escapeHtml(label)}</span>`).join('') + '</div>';
+    const coordHtml = coordLines.length
+      ? `<p class="note coord-note">${escapeHtml(coordLines.join(' · '))}</p>` : '';
+    const stampImage = (src, lines) => {
+      if (!src || !lines.length) return Promise.resolve(src);
+      return loadImage(src).then((img) => {
+        const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+        const c = canvasContext(w, h);
+        c.ctx.drawImage(img, 0, 0);
+        const fs = Math.max(12, Math.round(w / 72));
+        c.ctx.font = `${fs}px "Times New Roman", serif`;
+        const lh = fs + 5, pad = 8;
+        const tw = Math.max(...lines.map((line) => c.ctx.measureText(line).width));
+        const bw = Math.min(w - 12, tw + 2 * pad);
+        const bh = lines.length * lh + pad;
+        const bx = 6, by = Math.max(6, h - bh - 6);
+        c.ctx.fillStyle = 'rgba(255,255,255,0.86)';
+        c.ctx.fillRect(bx, by, bw, bh);
+        c.ctx.strokeStyle = '#733933'; c.ctx.lineWidth = 1;
+        c.ctx.strokeRect(bx, by, bw, bh);
+        c.ctx.fillStyle = '#000';
+        lines.forEach((line, i) => c.ctx.fillText(line, bx + pad, by + pad + i * lh + fs));
+        // Стрелка севера — обязательный элемент координатной метки снимка.
+        c.ctx.fillStyle = 'rgba(255,255,255,0.86)';
+        c.ctx.fillRect(w - 44, 6, 38, 46);
+        c.ctx.strokeRect(w - 44, 6, 38, 46);
+        c.ctx.fillStyle = '#733933';
+        c.ctx.beginPath(); c.ctx.moveTo(w - 25, 12); c.ctx.lineTo(w - 32, 32);
+        c.ctx.lineTo(w - 25, 27); c.ctx.lineTo(w - 18, 32); c.ctx.closePath(); c.ctx.fill();
+        c.ctx.font = `bold ${fs}px "Times New Roman", serif`;
+        c.ctx.fillText('N', w - 31, 46);
+        return c.canvas.toDataURL('image/png');
+      }).catch(() => src);
+    };
+    return Promise.all([invertMaskDataUrl(payload.mask), stampImage(payload.image, coordLines)]).then(([maskImg, sceneImg]) => {
       const win = window.open('', '_blank');
       if (!win) throw new Error('Разрешите всплывающие окна для сохранения отчёта.');
       const img = (src, cap) => src ? `<div class="figure"><img src="${src}" alt=""><div class="fig-cap">${cap}</div></div>` : '';
@@ -1301,6 +1360,12 @@
         .figure { text-align: center; margin: 6pt 0; }
         .figure img { max-width: 100%; max-height: 15cm; }
         .fig-cap { text-align: center; margin-top: 4pt; font-size: 14pt; }
+        .fig-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 3pt 12pt;
+          font-size: 10pt; text-indent: 0; margin: 4pt 0 2pt; }
+        .fig-legend span { white-space: nowrap; }
+        .fig-legend i { display: inline-block; width: 10pt; height: 10pt; margin-right: 4pt;
+          border: 1px solid #000; vertical-align: -1pt; }
+        .coord-note { text-align: center; font-weight: bold; }
         .page { page-break-after: always; }
         .page:last-child { page-break-after: auto; }
         .wide { page: wide; page-break-before: always; }
@@ -1351,10 +1416,12 @@
         </div>
         <div class="page">
           <h2>IV. Снимок с выделенной маской и маска реки</h2>
-          ${img(payload.image, mapReport
+          ${img(sceneImg, mapReport
             ? 'Рисунок 2 — Карта с водосбором, речной сетью и главным руслом'
             : 'Рисунок 2 — Снимок с выделенной маской воды (зелёный) и точкой расхода (створ, маркер «1»)')}
+          ${legendHtml}
           ${mapLegend}
+          ${coordHtml}
           ${marksHtml}
         </div>
         <div class="page">

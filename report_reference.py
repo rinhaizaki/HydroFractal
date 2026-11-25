@@ -190,6 +190,32 @@ def write_report(self, path):
     def fig_caption(text, markup=False):
         return Paragraph(text if markup else escape(text), caption_fig)
 
+    def fig_legend(items):
+        """Цветная легенда под рисунком 2 (без растровых файлов)."""
+        legend_style = ParagraphStyle(
+            "fig_legend", parent=note, fontSize=9, leading=12,
+            firstLineIndent=0, alignment=TA_CENTER)
+        swatches, labels = [], []
+        col_w = 16.3 * cm / max(1, len(items))
+        for color, text in items:
+            sw = Table([[""]], colWidths=[0.32 * cm], rowHeights=[0.28 * cm])
+            sw.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(color)),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+            ]))
+            swatches.append(sw)
+            labels.append(Paragraph(escape(text), legend_style))
+        t = Table([swatches, labels], colWidths=[col_w] * len(items))
+        t.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ("TOPPADDING", (0, 0), (-1, -1), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        return t
+
     def table(data, widths, header=True, center=False, keep_whole=False,
               markup=False, font_size=12, bold_first_col=False, pad=3):
         """center=True — все ячейки по центру;
@@ -766,9 +792,63 @@ def write_report(self, path):
     story.append(PageBreak())       # глава 4 — с новой страницы
     story.append(sect("IV. Снимок с выделенной маской и маска реки"))
     scene = self._render_scene_image(max_side=1400, force_overlay=True)
+    geo = getattr(self, "geo", None) or {}
+    map_report = bool(getattr(self, "map_report", False))
+    params = getattr(self, "params", None) or []
+
+    def from_params(label, fallback=""):
+        for row in params:
+            if row and row[0] == label:
+                return str(row[1])
+        return fallback
+
+    def coord_text(value, nd=5):
+        try:
+            return f"{float(value):.{nd}f}".replace(".", ",")
+        except (TypeError, ValueError):
+            return str(value)
+
+    coord_lines = []
+    if map_report:
+        outlet = geo.get("outlet") or {}
+        center = geo.get("center") or {}
+        if outlet.get("lat") is not None and outlet.get("lon") is not None:
+            coord_lines.append(f"Створ: {coord_text(outlet['lat'])}° N, "
+                               f"{coord_text(outlet['lon'])}° E")
+        elif from_params("Створ"):
+            coord_lines.append("Створ: " + from_params("Створ"))
+        if center.get("lat") is not None and center.get("lon") is not None:
+            coord_lines.append(f"Центр: {coord_text(center['lat'])}° N, "
+                               f"{coord_text(center['lon'])}° E")
+        elif from_params("Центр карты"):
+            coord_lines.append("Центр: " + from_params("Центр карты"))
+        if geo.get("zoom") is not None:
+            scale = (f" · {coord_text(geo['m_per_px'], 1)} м/пиксель"
+                     if geo.get("m_per_px") else "")
+            coord_lines.append(f"z{geo['zoom']}{scale}")
+        elif from_params("Масштаб карты"):
+            coord_lines.append(from_params("Масштаб карты"))
+    legend_items = ([
+        ("#4682C8", "предварительная область водосбора"),
+        ("#9CA75A", "уточнённый водосбор"),
+        ("#8B6431", "речная сеть"),
+        ("#733933", "главное русло"),
+        ("#FF3C3C", "створ (маркер «1»)"),
+    ] if map_report else [
+        ("#28DC50", "выделенная маска воды"),
+        ("#FF3C3C", "створ (маркер «1»)"),
+        ("#F5CD46", "дополнительные точки цвета"),
+    ])
     story.append(KeepTogether([
         buf_image(scene, 15.0),
-        fig_caption("Рисунок 2 — Снимок с выделенной маской воды "
+        fig_legend(legend_items),
+        *( [Paragraph(escape(" · ".join(coord_lines)), ParagraphStyle(
+                "fig_coord", parent=note, alignment=TA_CENTER,
+                firstLineIndent=0, fontName="Times New Roman Bold"))]
+            if coord_lines else [] ),
+        fig_caption("Рисунок 2 — Карта с водосбором, речной сетью и главным руслом"
+                    if map_report else
+                    "Рисунок 2 — Снимок с выделенной маской воды "
                     "(зелёный) и точкой расхода (створ, маркер «1»)"),
     ]))
     inv = np.where(self.mask, 0, 255).astype(np.uint8)

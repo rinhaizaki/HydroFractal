@@ -276,13 +276,67 @@ def make_report_pdf(payload: dict) -> bytes:
         def get(self):
             return tol_value
 
+    geo = payload.get("geo") or {}
+    map_report = (payload.get("source_name") == "карта и водосбор"
+                  or "карте" in str(payload.get("title", "")).lower())
+
+    def _stamp_coordinates(img):
+        """Координатная метка на спутниковом снимке рисунка 2."""
+        if not map_report or not geo:
+            return img
+        from PIL import ImageFont
+        lines = []
+        outlet = geo.get("outlet") or {}
+        center = geo.get("center") or {}
+        if outlet.get("lat") is not None and outlet.get("lon") is not None:
+            lines.append("Створ: {}° N, {}° E".format(
+                f'{float(outlet["lat"]):.5f}'.replace(".", ","),
+                f'{float(outlet["lon"]):.5f}'.replace(".", ",")))
+        if center.get("lat") is not None and center.get("lon") is not None:
+            lines.append("Центр: {}° N, {}° E".format(
+                f'{float(center["lat"]):.5f}'.replace(".", ","),
+                f'{float(center["lon"]):.5f}'.replace(".", ",")))
+        if geo.get("zoom") is not None:
+            extra = ""
+            if geo.get("m_per_px"):
+                extra = " · {} м/пиксель".format(f'{float(geo["m_per_px"]):.1f}'.replace(".", ","))
+            lines.append(f'z{geo["zoom"]}{extra}')
+        if not lines:
+            return img
+        font_path = os.path.join(BASE_DIR, "fonts", "Tinos-Regular.ttf")
+        if not os.path.exists(font_path):
+            font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        size = max(12, round(img.width / 72))
+        try:
+            font = ImageFont.truetype(font_path, size)
+        except Exception:
+            font = ImageFont.load_default()
+        d0 = ImageDraw.Draw(img)
+        box = d0.multiline_textbbox((0, 0), "\n".join(lines), font=font, spacing=4)
+        bw, bh = box[2] - box[0] + 20, box[3] - box[1] + 14
+        bx, by = 6, max(6, img.height - bh - 6)
+        layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        d.rectangle([bx, by, bx + bw, by + bh], fill=(255, 255, 255, 220),
+                    outline=(115, 57, 51, 255), width=1)
+        d.multiline_text((bx + 10, by + 6), "\n".join(lines), fill=(0, 0, 0, 255),
+                         font=font, spacing=4)
+        # Стрелка севера в правом верхнем углу.
+        nx, ny = img.width - 44, 6
+        d.rectangle([nx, ny, nx + 38, ny + 46], fill=(255, 255, 255, 220),
+                    outline=(115, 57, 51, 255), width=1)
+        d.polygon([(nx + 19, ny + 6), (nx + 12, ny + 26),
+                   (nx + 19, ny + 21), (nx + 26, ny + 26)], fill=(115, 57, 51, 255))
+        d.text((nx + 15, ny + 30), "N", fill=(115, 57, 51, 255), font=font)
+        return Image.alpha_composite(img.convert("RGBA"), layer).convert("RGB")
+
     def _render_scene_image(max_side=1400, force_overlay=False):
         img = scene.convert("RGB")
         if max(img.size) > max_side:
             k = max_side / max(img.size)
             img = img.resize((max(1, round(img.width * k)),
                               max(1, round(img.height * k))), Image.LANCZOS)
-        return img
+        return _stamp_coordinates(img)
 
     ctx = SimpleNamespace(
         image_path=payload.get("source_name") or "—",
@@ -296,6 +350,7 @@ def make_report_pdf(payload: dict) -> bytes:
         _method_index={"color": 0, "dark": 1, "hybrid": 2}.get(method, 0),
         _object_index={"skeleton": 0, "boundary": 1, "mask": 2}.get(obj, 0),
         _render_scene_image=_render_scene_image,
+        geo=geo, map_report=map_report, params=payload.get("params") or [],
         notify=lambda *args, **kwargs: None,
     )
     bio = io.BytesIO()
