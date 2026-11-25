@@ -373,7 +373,14 @@ def write_report(self, path):
                 c.translate(13, (y0 + y1) / 2.0)
                 c.rotate(90)
                 c.setFont("Times New Roman", 9.5)
-                c.drawCentredString(0, 0, "Модульный коэффициент K_P")
+                label = "Модульный коэффициент K"
+                lw = c.stringWidth(label, "Times New Roman", 9.5)
+                c.setFont("Times New Roman", 7)
+                pw = c.stringWidth("P", "Times New Roman", 7)
+                c.setFont("Times New Roman", 9.5)
+                c.drawString(-(lw + pw) / 2, 0, label)
+                c.setFont("Times New Roman", 7)
+                c.drawString(-(lw + pw) / 2 + lw, -2.5, "P")
                 c.restoreState()
 
     def buf_image(pil_image, width_cm, fmt="PNG"):

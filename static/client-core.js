@@ -27,20 +27,46 @@
   };
   const TERRAIN_URL = 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png';
   const TERRAIN_CREDIT = 'Рельеф: Mapzen / AWS Terrain Tiles';
+  const TILE_CREDITS = {
+    esri: [
+      'Снимок: Esri, Maxar, Earthstar Geographics',
+      'Снимок: Esri, Maxar, Earthstar Geographics',
+      'Снимок: Esri, Maxar, Earthstar Geographics',
+      'Снимок: Google Satellite',
+      'Снимок: Google Satellite',
+      'Карта: © OpenStreetMap (резерв)'
+    ],
+    topo: [
+      'Карта: © OpenTopoMap (CC-BY-SA), данные © OpenStreetMap',
+      'Карта: © OpenTopoMap (CC-BY-SA), данные © OpenStreetMap',
+      'Карта: © OpenStreetMap (резерв)'
+    ]
+  };
 
   // ------------------------------------------------------------- изображения
-  function loadImage(src) {
+  function loadImage(src, timeoutMs) {
     return new Promise((resolve, reject) => {
       const img = new Image();
-      try { img.referrerPolicy = 'no-referrer'; } catch (e) { /* ignore */ }
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error('Не удалось прочитать изображение.'));
+      let done = false;
+      const timer = setTimeout(() => finish(new Error('Таймаут загрузки изображения.')),
+        timeoutMs || 12000);
+      function finish(err, value) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        img.onload = img.onerror = null;
+        if (err) reject(err); else resolve(value);
+      }
+      img.onload = () => finish(null, img);
+      img.onerror = () => finish(new Error('Не удалось прочитать изображение.'));
       img.src = src;
     });
   }
   function loadFirstImage(urls) {
     if (!urls.length) return Promise.reject(new Error('нет источников тайла'));
-    return loadImage(urls[0]).catch(() => loadFirstImage(urls.slice(1)));
+    return loadImage(urls[0]).then((img) => ({ img, index: 0 }))
+      .catch(() => loadFirstImage(urls.slice(1))
+        .then((res) => ({ img: res.img, index: res.index + 1 })));
   }
   function dataUrlToBytes(dataURL) {
     const comma = dataURL.indexOf(',');
@@ -690,26 +716,41 @@
       if (source === 'esri') {
         urls.push('https://services.arcgisonline.com/ArcGIS/rest/services/' +
           'World_Imagery/MapServer/tile/{z}/{y}/{x}');
+        urls.push('https://server.arcgisonline.com/ArcGIS/rest/services/' +
+          'World_Imagery/MapServer/tile/{z}/{y}/{x}.jpg');
+        urls.push('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}');
+        urls.push('https://mt2.google.com/vt/lyrs=s&x={x}&y={y}&z={z}');
         urls.push('https://tile.openstreetmap.org/{z}/{x}/{y}.png');
       } else {
         urls.push('https://a.tile.opentopomap.org/{z}/{x}/{y}.png');
+        urls.push('https://tile.opentopomap.org/{z}/{x}/{y}.png');
+        urls.push('https://tile.openstreetmap.org/{z}/{x}/{y}.png');
       }
       const candidates = urls.map((u) => u
         .replace('{s}', sub[(x + y) % 3])
         .replace('{z}', z).replace('{x}', x).replace('{y}', y));
-      return fetchImage(candidates).then((img) => ({
-        img, px: (x - geo.x0) * TILE, py: (y - geo.y0) * TILE
+      return fetchImage(candidates).then(({ img, index }) => ({
+        img, sourceIndex: index,
+        px: (x - geo.x0) * TILE, py: (y - geo.y0) * TILE
       })).catch(() => null);
     });
     return Promise.all(jobs).then((results) => {
       const tiles = results.filter(Boolean);
       const demo = tiles.length === 0;
+      const used = {};
+      tiles.forEach((t) => { used[t.sourceIndex] = (used[t.sourceIndex] || 0) + 1; });
+      const mainSource = Object.keys(used)
+        .sort((a, b) => used[b] - used[a])
+        .map(Number)[0];
+      const creditBase = (TILE_CREDITS[source] || [SOURCES[source].credit])[mainSource]
+        || SOURCES[source].credit;
       const answer = (relief) => ({
         ok: true,
         image: safe.toDataURL('image/jpeg', 0.88),
         tiles, relief: relief ? relief.toDataURL('image/png') : null,
-        credit: SOURCES[source].credit + ' · ' + TERRAIN_CREDIT + (demo ? ' (демо-карта)' : ''),
-        demo, cell_m: Math.round(resolutionM(lat, z) * 100) / 100, geo
+        credit: creditBase + ' · ' + TERRAIN_CREDIT + (demo ? ' (демо-карта)' : ''),
+        demo, source_used: mainSource,
+        cell_m: Math.round(resolutionM(lat, z) * 100) / 100, geo
       });
       if (!params.relief) return answer(null);
       const dz = Math.min(z, 12);
@@ -1058,7 +1099,7 @@
       out += `<text x="${x}" y="${y1 + 14}" text-anchor="middle" font-size="11" font-family="Times New Roman">${String(p).replace('.', ',')}</text>`;
     });
     out += `<text x="${(x0 + x1) / 2}" y="${H - 8}" text-anchor="middle" font-size="14" font-family="Times New Roman">Обеспеченность P, %</text>
-      <text transform="translate(20,${(y0 + y1) / 2}) rotate(-90)" text-anchor="middle" font-size="14" font-family="Times New Roman">Модульный коэффициент K_P</text>
+      <text transform="translate(20,${(y0 + y1) / 2}) rotate(-90)" text-anchor="middle" font-size="14" font-family="Times New Roman">Модульный коэффициент K<tspan baseline-shift="sub" font-size="10">P</tspan></text>
       </svg>`;
     return out;
   }

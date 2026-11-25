@@ -23,6 +23,8 @@
     mapReport: $('mapReport'), mapPlot: $('mapPlotImg'), mapPlotEmpty: $('mapPlotEmpty'),
     mapTableWrap: $('mapTableWrap'), mapTableDetails: $('mapTableDetails'),
     mapCredit: $('mapCredit'), mapZoom: $('mapZoom'), mapCoords: $('mapCoords'),
+    mapLat: $('mapLat'), mapLon: $('mapLon'),
+    mapMinimapBox: $('mapMinimapBox'), mapMinimapCanvas: $('mapMinimapCanvas'),
     status: $('status'), statusRight: $('statusRight'),
     toast: $('toast'), modal: $('modal'), modalTitle: $('modalTitle'), modalBody: $('modalBody'),
     fileInput: $('fileInput')
@@ -42,11 +44,12 @@
     overlayDataURL: null, maskTouched: false,
     mapTabLoaded: false, activeTab: 'photo',
     map: {
-      lon: 41.70, lat: 43.50, zoom: 11, source: 'esri', relief: false,
+      lon: 30.33510, lat: 59.93428, zoom: 11, source: 'esri', relief: false,
       img: null, geo: null, outlet: null, result: null, info: null,
       credit: 'Карта: Esri · Рельеф: AWS Terrain Tiles', demo: false, cell: 0,
       panDx: 0, panDy: 0, dragStart: null, moved: false, loading: false,
-      tiles: [], reliefImg: null, overlayImg: null, reportImage: null, mask: null, width: 0, height: 0
+      tiles: [], reliefImg: null, overlayImg: null, reportImage: null, mask: null, width: 0, height: 0,
+      minimapVisible: false, miniKey: '', miniResp: null
     }
   };
 
@@ -712,6 +715,7 @@
     }
     el.mapCredit.textContent = S.map.credit + (S.map.demo ? ' · демо-рельеф (нет сети)' : '');
     el.mapZoom.textContent = `z${S.map.zoom} · ${fmt(S.map.cell, 1)} м/пиксель`;
+    if (S.map.minimapVisible) renderMapMinimap();
   }
   function mapParams() {
     const rect = el.mapCanvas.getBoundingClientRect();
@@ -744,6 +748,7 @@
       el.mapPlaceholder.hidden = true;
       renderMap();
       updateMapCoords();
+      if (S.map.minimapVisible) loadMapMinimap();
       if (!quiet) {
         status(resp.demo
           ? 'Внешние тайлы недоступны — показана демо-подложка. Кликните по руслу реки.'
@@ -758,6 +763,82 @@
     const lo = lon === undefined ? S.map.lon : lon;
     el.mapCoords.textContent = `${Math.abs(lo).toFixed(5)}° ${lo >= 0 ? 'E' : 'W'}, ` +
       `${Math.abs(la).toFixed(5)}° ${la >= 0 ? 'N' : 'S'}`;
+    if (el.mapLat) el.mapLat.value = la.toFixed(5);
+    if (el.mapLon) el.mapLon.value = lo.toFixed(5);
+  }
+  function mapZoomBy(delta) {
+    if (!S.map.geo) { toast('Карта ещё загружается.'); return; }
+    const z = clamp(S.map.zoom + delta, 2, 18);
+    if (z === S.map.zoom) return;
+    S.map.zoom = z;
+    loadMapView(true);
+    status(`Масштаб карты: z${z}.`);
+  }
+  function searchMapCoords() {
+    const lat = Number(el.mapLat.value), lon = Number(el.mapLon.value);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) ||
+        Math.abs(lat) > 85 || Math.abs(lon) > 180) {
+      toast('Введите координаты: широта −85…85, долгота −180…180.');
+      return;
+    }
+    S.map.lat = lat; S.map.lon = lon;
+    S.map.panDx = S.map.panDy = 0;
+    // Поиск центра: створ НЕ ставим и гидрологию не запускаем.
+    loadMapView(true);
+    status(`Карта центрирована: ${fmt(lat, 5)}° N, ${fmt(lon, 5)}° E. Створ не изменён.`);
+  }
+  async function loadMapMinimap() {
+    if (!S.map.minimapVisible || !S.map.geo) return;
+    const mz = clamp(S.map.zoom - 4, 0, 12);
+    const t = tileXY(S.map.lon, S.map.lat, mz);
+    const key = `${S.map.source}/${mz}/${Math.floor(t.x)}/${Math.floor(t.y)}`;
+    if (key === S.map.miniKey && S.map.miniResp) { renderMapMinimap(); return; }
+    S.map.miniKey = key;
+    try {
+      const resp = await api('/api/map/view', {
+        lon: S.map.lon, lat: S.map.lat, zoom: mz,
+        width: 320, height: 220, source: S.map.source, relief: false
+      });
+      const img = await loadImage(resp.image);
+      S.map.miniResp = Object.assign({}, resp, { img: img });
+      renderMapMinimap();
+    } catch (e) { /* мини-карта необязательна при отсутствии сети */ }
+  }
+  function renderMapMinimap() {
+    if (!S.map.minimapVisible || !el.mapMinimapBox || el.mapMinimapBox.hidden) return;
+    const c = el.mapMinimapCanvas;
+    if (!c) return;
+    const ctx = c.getContext('2d');
+    const w = c.width, h = c.height;
+    ctx.clearRect(0, 0, w, h);
+    const mini = S.map.miniResp, geo = S.map.geo;
+    if (!mini || !mini.img || !mini.geo || !geo) {
+      ctx.fillStyle = '#eee'; ctx.fillRect(0, 0, w, h);
+      return;
+    }
+    const sx = w / mini.geo.w, sy = h / mini.geo.h;
+    ctx.drawImage(mini.img, 0, 0, w, h);
+    (mini.tiles || []).forEach((t) => {
+      ctx.drawImage(t.img, t.px * sx, t.py * sy, 256 * sx, 256 * sy);
+    });
+    const k = Math.pow(2, mini.geo.z - geo.z);
+    const x0 = (geo.x0 * k - mini.geo.x0) * 256 * sx;
+    const y0 = (geo.y0 * k - mini.geo.y0) * 256 * sy;
+    const vw = Math.max(3, geo.w * k * sx);
+    const vh = Math.max(3, geo.h * k * sy);
+    ctx.strokeStyle = '#733933'; ctx.lineWidth = 2;
+    ctx.strokeRect(x0, y0, vw, vh);
+    const mx = ((tileXY(S.map.lon, S.map.lat, mini.geo.z).x - mini.geo.x0) * 256) * sx;
+    const my = ((tileXY(S.map.lon, S.map.lat, mini.geo.z).y - mini.geo.y0) * 256) * sy;
+    ctx.fillStyle = '#ff3c3c';
+    ctx.beginPath(); ctx.arc(mx, my, 3, 0, 2 * Math.PI); ctx.fill();
+  }
+  function toggleMapMinimap() {
+    S.map.minimapVisible = !S.map.minimapVisible;
+    el.mapMinimapBox.hidden = !S.map.minimapVisible;
+    $('btnMapMinimap').classList.toggle('selected', S.map.minimapVisible);
+    status(S.map.minimapVisible ? 'Мини-карта открыта.' : 'Мини-карта скрыта.');
+    if (S.map.minimapVisible) loadMapMinimap();
   }
   function showMapResult(resp) {
     S.map.info = resp.map;
@@ -997,12 +1078,33 @@
     $('mapSource').addEventListener('change', (e) => { S.map.source = e.target.value; loadMapView(true); });
     $('mapRelief').addEventListener('change', (e) => { S.map.relief = e.target.checked; loadMapView(true); });
     $('btnMapHome').addEventListener('click', () => {
-      S.map.lon = 41.70; S.map.lat = 43.50; S.map.zoom = 11;
+      S.map.lon = 30.33510; S.map.lat = 59.93428; S.map.zoom = 11;
       updateMapCoords(); loadMapView(true);
+      status('Центр карты — Санкт-Петербург. Створ не изменён.');
     });
+    $('btnMapSearch').addEventListener('click', searchMapCoords);
+    $('btnMapZoomIn').addEventListener('click', () => mapZoomBy(1));
+    $('btnMapZoomOut').addEventListener('click', () => mapZoomBy(-1));
+    $('btnMapMinimap').addEventListener('click', toggleMapMinimap);
     $('btnMapCatch').addEventListener('click', mapAnalyze);
     $('btnMapDim').addEventListener('click', mapAnalyze);
     $('btnMapPdf').addEventListener('click', mapSavePdf);
+
+    el.mapMinimapCanvas.addEventListener('pointerdown', (e) => {
+      const mini = S.map.miniResp;
+      if (!mini || !mini.geo) return;
+      const rect = el.mapMinimapCanvas.getBoundingClientRect();
+      const px = (e.clientX - rect.left) * el.mapMinimapCanvas.width / rect.width;
+      const py = (e.clientY - rect.top) * el.mapMinimapCanvas.height / rect.height;
+      const sx = el.mapMinimapCanvas.width / mini.geo.w;
+      const sy = el.mapMinimapCanvas.height / mini.geo.h;
+      const ll = lonLatFromTile(mini.geo.x0 + (px / sx) / 256,
+        mini.geo.y0 + (py / sy) / 256, mini.geo.z);
+      S.map.lon = ll.lon; S.map.lat = ll.lat;
+      S.map.panDx = S.map.panDy = 0;
+      loadMapView(true);
+      status('Карта перемещена по мини-карте. Створ не изменён.');
+    });
 
     el.mapCanvas.addEventListener('pointerdown', (e) => {
       if (!S.map.geo) return;
@@ -1145,8 +1247,90 @@
     if (actions[act]) actions[act]();
   }
 
+  // ---------------------------------------------------------------- подсказки
+  const TIPS = {
+    // меню
+    'Файл': 'Загрузка снимка, сохранение маски и отчёта',
+    'Правка': 'Отмена/повтор, очистка маски и сброс масштаба',
+    'Вид': 'Переключение вида снимка и карты просмотра',
+    'Переход': 'Переключение между вкладками «Фотоснимок» и «Карта»',
+    'Справка': 'Инструкция и сведения о программе',
+    // действия меню
+    'open': 'Открыть спутниковый снимок реки (JPG, PNG, TIFF)',
+    'close': 'Закрыть текущий снимок и очистить результаты',
+    'save-mask': 'Сохранить чёрно-белую маску PNG с метаданными',
+    'save-report': 'Сформировать PDF-отчёт в формате эталона',
+    'undo': 'Отменить последнее движение кисти или ластика (Ctrl+Z)',
+    'redo': 'Повторить отменённое действие (Ctrl+Y)',
+    'clear-mask': 'Полностью очистить выделение воды',
+    'reset-view': 'Вернуть масштаб и положение снимка к исходным',
+    'view-overlay': 'Показать снимок с зелёной маской воды',
+    'view-image': 'Показать только исходный снимок',
+    'view-mask': 'Показать только маску',
+    'toggle-minimap': 'Показать или скрыть карту просмотра снимка',
+    'zoom-fit': 'Показать весь снимок целиком',
+    'tab-photo': 'Перейти к работе со спутниковым снимком',
+    'tab-map': 'Перейти к карте, водосбору и рельефу',
+    'help': 'Открыть краткую инструкцию по работе',
+    'about': 'Сведения о HydroFractal и алгоритмах',
+    // кнопки снимка
+    'btnLoad': 'Загрузить спутниковый снимок с компьютера',
+    'btnLoadBig': 'Выбрать файл снимка для анализа',
+    'btnDemoImage': 'Загрузить демонстрационный снимок реки',
+    'btnSegment': 'Выделить воду HSV-сегментацией по точке и доп. точкам',
+    'btnAnalyze': 'Рассчитать фрактальную размерность D методом Кантора',
+    'btnSaveMask': 'Скачать маску PNG с метаданными (чёрный — вода)',
+    'btnSaveReport': 'Открыть окно печати для сохранения PDF-отчёта',
+    'btnUndo': 'Отменить последнее изменение маски (Ctrl+Z)',
+    'btnRedo': 'Повторить отменённое изменение маски (Ctrl+Y)',
+    'btnZoomIn': 'Приблизить снимок',
+    'btnZoomOut': 'Отдалить снимок',
+    'btnZoomFit': 'Показать весь снимок',
+    'btnMinimap': 'Показать или скрыть карту просмотра',
+    'rot1': 'Повернуть снимок на 90° против часовой стрелки',
+    'rot3': 'Повернуть снимок на 90° по часовой стрелке',
+    'rot2': 'Повернуть снимок на 180°',
+    'fliph': 'Отразить снимок по горизонтали',
+    'flipv': 'Отразить снимок по вертикали',
+    'photo': 'Вкладка анализа спутникового снимка',
+    'map': 'Вкладка карты и водосбора',
+    // кнопки карты
+    'btnMapSearch': 'Переместить карту к введённым координатам (без постановки створа)',
+    'btnMapHome': 'Вернуться к центру — Санкт-Петербург',
+    'btnMapZoomIn': 'Увеличить масштаб карты',
+    'btnMapZoomOut': 'Уменьшить масштаб карты',
+    'btnMapMinimap': 'Показать или скрыть мини-карту',
+    'btnMapCatch': 'Построить водосбор и главное русло по рельефу',
+    'btnMapDim': 'Рассчитать D по главному руслу водосбора',
+    'btnMapPdf': 'Сформировать сводный PDF-отчёт по карте',
+    'modalClose': 'Закрыть окно',
+    'modalOk': 'Понятно, закрыть окно'
+  };
+  const FIELD_TIPS = {
+    mapSource: 'Источник подложки: спутник Esri или топокарта OpenTopoMap',
+    mapRelief: 'Показать отмывку рельефа по данным AWS Terrain Tiles',
+    tool: 'Инструмент работы со снимком: створ, цвет, панорама, ластик, кисть',
+    viewMode: 'Что показывать на холсте: снимок с маской, только снимок или только маску',
+    method: 'HSV-признак сегментации воды: цвет точки, яркость или комбинация',
+    largest: 'Оставлять только самую крупную связную область воды',
+    scaleText: 'Масштаб снимка в метрах на пиксель (для метаданных маски)'
+  };
+  function initTooltips() {
+    document.querySelectorAll('button').forEach((btn) => {
+      const key = btn.id || btn.dataset.act || btn.dataset.tab ||
+        btn.dataset.rotate || btn.dataset.menu || btn.textContent.trim();
+      const tip = TIPS[key];
+      if (tip) btn.title = tip;
+    });
+    Object.keys(FIELD_TIPS).forEach((id) => {
+      const node = $(id);
+      if (node && !node.title) node.title = FIELD_TIPS[id];
+    });
+  }
+
   // ------------------------------------------------------------------- init
   function init() {
+    initTooltips();
     setStatusForTool();
     bindEvents();
     renderPhoto();
