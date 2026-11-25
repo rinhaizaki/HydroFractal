@@ -1689,7 +1689,10 @@
     if (!S.map.geo) { toast('Карта ещё загружается.'); return false; }
     return true;
   }
-  function captureMapForReport() {
+  // Тайлы Leaflet создаются без CORS-атрибута, поэтому прямой drawImage()
+  // может сделать.canvas «грязным», и toDataURL() упадёт. Перезагружаем видимые тайлы
+  // с crossOrigin=anonymous: Esri и Planetary Computer это разрешают.
+  async function captureMapForReport() {
     const rect = el.mapCanvas.getBoundingClientRect();
     const w = Math.max(240, Math.round(rect.width));
     const h = Math.max(180, Math.round(rect.height));
@@ -1697,22 +1700,32 @@
     c.width = w; c.height = h;
     const ctx = c.getContext('2d');
     ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
-    let tiles = 0;
+    const jobs = [];
     if (S.map.leaflet && el.leafletWrap) {
       const host = el.leafletWrap.getBoundingClientRect();
       el.leafletWrap.querySelectorAll('img.leaflet-tile').forEach((img) => {
         const r = img.getBoundingClientRect();
-        if (!r.width || !r.height || !img.complete) return;
-        try {
-          ctx.drawImage(img, r.left - host.left, r.top - host.top, r.width, r.height);
-          tiles++;
-        } catch (e) { /* тайл ещё грузится */ }
+        if (!r.width || !r.height || !img.complete || !img.src) return;
+        const x = r.left - host.left, y = r.top - host.top;
+        jobs.push(new Promise((done) => {
+          const copy = new Image();
+          copy.crossOrigin = 'anonymous';
+          copy.onload = () => {
+            try { ctx.drawImage(copy, x, y, r.width, r.height); } catch (e) { /* ignore */ }
+            done();
+          };
+          copy.onerror = () => done();
+          copy.src = img.src;
+        }));
       });
     }
+    await Promise.all(jobs);
+    // Слой Canvas с контурами водосбора, метками и рисунками — локальный, безопасный.
+    try { ctx.drawImage(el.mapCanvas, 0, 0, w, h); } catch (e) { /* ignore */ }
     if (S.map.overlayImg) {
       try { ctx.drawImage(S.map.overlayImg, 0, 0, w, h); } catch (e) { /* ignore */ }
     }
-    return tiles ? c.toDataURL('image/jpeg', 0.92) : null;
+    try { return c.toDataURL('image/jpeg', 0.92); } catch (e) { return null; }
   }
   async function mapSavePdf() {
     if (!S.map.result) { toast('Сначала постройте водосбор и рассчитайте D.'); return; }
@@ -1738,7 +1751,7 @@
         ],
         result: r, table: r.table || [], stream: r.stream || {},
         plot: r.plot,
-        image: captureMapForReport() || S.map.reportImage || (S.map.img ? S.map.img.src : null),
+        image: await captureMapForReport() || S.map.reportImage || (S.map.img ? S.map.img.src : null),
         marks: S.map.marks.map((m) => ({ lat: m.lat, lon: m.lon, label: m.label }))
       }, 'gidrofraktal-map-report.pdf');
       status('PDF-отчёт по карте сохранён.');
