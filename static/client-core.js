@@ -27,7 +27,8 @@
   };
   const PC_STAC = 'https://planetarycomputer.microsoft.com/api/stac/v1/search';
   const PC_DEM_TILES = 'https://planetarycomputer.microsoft.com/api/data/v1/collections/cop-dem-glo-30/items/{item}/tiles/WebMercatorQuad/{z}/{x}/{y}@1x?assets=data&rescale=-1000,4000&format=png';
-  const TERRAIN_CREDIT = 'ЦМР: Copernicus DEM GLO-30 / Planetary Computer';
+  const NASADEM_TILES = 'https://planetarycomputer.microsoft.com/api/data/v1/collections/nasadem/items/{item}/tiles/WebMercatorQuad/{z}/{x}/{y}@1x?assets=elevation&rescale=-100,4000&format=png';
+  const TERRAIN_CREDIT = 'ЦМР: Planetary Computer (Copernicus DEM GLO-30 / NASADEM)';
   const sentinelItems = new Map();
   function findSentinelItem(lon, lat) {
     const key = Math.round(lon * 4) + ':' + Math.round(lat * 4);
@@ -59,6 +60,16 @@
   function pcDemUrl(z, x, y) {
     const [lon, lat] = tileToLonLat(x + 0.5, y + 0.5, z);
     return PC_DEM_TILES.replace('{item}', demItemName(lon, lat))
+      .replace('{z}', z).replace('{x}', x).replace('{y}', y);
+  }
+  function nasaDemItemName(lon, lat) {
+    const ilon = Math.round(lon), ilat = Math.round(lat);
+    return 'NASADEM_HGT_' + (ilat >= 0 ? 'n' : 's') + String(Math.abs(ilat)).padStart(2, '0') +
+      (ilon >= 0 ? 'e' : 'w') + String(Math.abs(ilon)).padStart(3, '0');
+  }
+  function nasaDemUrl(z, x, y) {
+    const [lon, lat] = tileToLonLat(x + 0.5, y + 0.5, z);
+    return NASADEM_TILES.replace('{item}', nasaDemItemName(lon, lat))
       .replace('{z}', z).replace('{x}', x).replace('{y}', y);
   }
   const TILE_CREDITS = {
@@ -375,6 +386,18 @@
     return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
       (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
   }
+  const SP33_CS_CV_RATIOS = [0, 0.5, 1, 1.5, 2, 3];
+  function sp33KpTable(cv) {
+    return MAJOR_P.map((p) => {
+      const row = [p];
+      SP33_CS_CV_RATIOS.forEach((ratio) => {
+        const cs = ratio * cv;
+        const z = normInv(1 - p / 100);
+        row.push(1 + (z + (cs / 6) * (z * z - 1)) * cv);
+      });
+      return row;
+    });
+  }
   function streamStats(D, dD) {
     const qMean = 100;
     const cv = Math.max(0.10, Math.min(0.80, 2 * (D - 1)));
@@ -389,7 +412,7 @@
     return {
       Q_mean: qMean, Cv: cv, Cs: cs,
       rel_err_Q: rel, rel_err_Cv: rel, rel_err_Cs: rel * 1.5,
-      kp_by_p: kp, qp_by_p: qp,
+      kp_by_p: kp, qp_by_p: qp, sp33: sp33KpTable(cv),
       qp: MAJOR_P.map((p) => ({ p, k: kp[p], q: qp[p] }))
     };
   }
@@ -658,18 +681,21 @@
     const nx = Math.max(1, tx1 - tx0 + 1), ny = Math.max(1, ty1 - ty0 + 1);
     const W = nx * TILE, H = ny * TILE;
     const tiles = tileRange(tx0, ty0, tx1, ty1);
+    const decode = (img, lo, hi, source) => {
+      const c = canvasContext(TILE, TILE);
+      c.ctx.drawImage(img, 0, 0);
+      const d = c.ctx.getImageData(0, 0, TILE, TILE).data;
+      const heights = new Float32Array(TILE * TILE);
+      for (let i = 0; i < heights.length; i++) {
+        heights[i] = d[i * 4 + 3] < 128 ? NaN : d[i * 4] / 255 * (hi - lo) + lo;
+      }
+      return { tx, ty, heights, source };
+    };
     const jobs = tiles.map(([tx, ty]) => fetchImageCors(pcDemUrl(demZoom, tx, ty))
-      .then((img) => {
-        const c = canvasContext(TILE, TILE);
-        c.ctx.drawImage(img, 0, 0);
-        const d = c.ctx.getImageData(0, 0, TILE, TILE).data;
-        const heights = new Float32Array(TILE * TILE);
-        for (let i = 0; i < heights.length; i++) {
-          // Copernicus DEM, rescale -1000..4000; прозрачное — вне 1° тайла.
-          heights[i] = d[i * 4 + 3] < 128 ? NaN : d[i * 4] / 255 * 5000 - 1000;
-        }
-        return { tx, ty, heights };
-      }).catch(() => null));
+      .then((img) => decode(img, -1000, 4000, 'cop-dem-glo-30'))
+      .catch(() => fetchImageCors(nasaDemUrl(demZoom, tx, ty))
+        .then((img) => decode(img, -100, 4000, 'nasadem')))
+      .catch(() => null));
     return Promise.all(jobs).then((parts) => {
       if (parts.every((p) => !p)) return null;
       const dem = new Float32Array(W * H);
@@ -686,7 +712,10 @@
       for (let i = 0; i < dem.length; i++) if (Number.isFinite(dem[i])) finite.push(dem[i]);
       const med = median(finite) || 0;
       for (let i = 0; i < dem.length; i++) if (!Number.isFinite(dem[i])) dem[i] = med;
-      return { dem, W, H, dgeo: { x0: tx0, y0: ty0, z: demZoom, w: W, h: H } };
+      const sources = {};
+      parts.forEach((p) => { if (p && p.source) sources[p.source] = (sources[p.source] || 0) + 1; });
+      const demSource = Object.keys(sources).sort((a, b) => sources[b] - sources[a])[0] || 'synthetic';
+      return { dem, W, H, source: demSource, dgeo: { x0: tx0, y0: ty0, z: demZoom, w: W, h: H } };
     });
   }
   function sampleDemToView(info, geo, W, H) {
@@ -1144,7 +1173,7 @@
     const yp = (k) => y1 - k / 5.5 * (y1 - y0);
     let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
       <rect x="${x0}" y="${y0}" width="${x1 - x0}" height="${y1 - y0}" fill="white" stroke="black" stroke-width="1"/>`;
-    for (let k = 0.2; k <= 5.4; k += 0.2) {
+    for (let k = 0.5; k <= 5.4; k += 0.5) {
       const major = Math.abs(k - Math.round(k)) < 1e-6;
       const y = yp(k);
       out += `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${major ? 'black' : '#b8b8b8'}" stroke-width="${major ? 0.8 : 0.35}"/>`;
@@ -1153,9 +1182,7 @@
         out += `<text x="${x0 - 10}" y="${y + 4}" text-anchor="end" font-size="13" font-family="Times New Roman">${k}</text>`;
       }
     }
-    const MINOR_P = [0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9, 1.5, 3, 4, 6, 7, 8, 9,
-      15, 25, 35, 45, 55, 65, 75, 85, 92, 93, 94, 96, 97, 98.5,
-      99.2, 99.3, 99.4, 99.6, 99.7, 99.8];
+    const MINOR_P = [1.5, 3, 6, 15, 25, 35, 45, 65, 85, 97];
     MINOR_P.forEach((p) => {
       const x = xp(p);
       out += `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke="#b8b8b8" stroke-width="0.35"/>`;
@@ -1218,6 +1245,11 @@
     ];
     const rows5 = (stream.qp || []).map((p) => [
       String(p.p).replace('.', ','), ru(p.k, 2), ru(p.q, 1)
+    ]);
+    const spTable = stream.sp33 || sp33KpTable(stream.Cv || 0.3);
+    const ratios = [0, 0.5, 1, 1.5, 2, 3];
+    const rowsSp = spTable.map((row) => [
+      String(row[0]).replace('.', ','), ...row.slice(1).map((v) => ru(v, 2))
     ]);
     const tbl = (caption, head, rows, cls) => `<div class="tbl-cap">${escapeHtml(caption)}</div>
       <table class="${cls || ''}"><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead>
@@ -1371,6 +1403,13 @@
           <p class="note">Пояснение: P — обеспеченность (вероятность превышения), %; k<sub>p</sub> —
           модульный коэффициент; Q<sub>P</sub> = k<sub>p</sub>·Q<sub>ср</sub> — расход воды заданной
           обеспеченности, м³/с. Строки соответствуют рисунку 4.</p>
+          <p>Методика СП 33-101-2003 (приложение Ж): для заданных C<sub>v</sub> и
+          C<sub>s</sub>/C<sub>v</sub> выбираются модульные коэффициенты
+          k<sub>p</sub>, затем Q<sub>P</sub> = k<sub>p</sub>·Q<sub>ср</sub>.
+          Ниже приведены расчётные ординаты для стандартных отношений
+          C<sub>s</sub>/C<sub>v</sub>; промежуточные значения интерполируются.</p>
+          ${tbl('Таблица 6 — k<sub>p</sub> по СП 33-101-2003 (приложение Ж)',
+            ['P, %', ...ratios.map((r) => 'Cs/Cv = ' + String(r).replace('.', ','))], rowsSp)}
         </div>
         <div class="page">
           <h2>Порядок вычисления</h2>
@@ -1390,7 +1429,7 @@
           C<sub>v</sub> — коэффициент вариации.</p>
           <p class="note">В формулах (10) и (11) z<sub>P</sub> — квантиль стандартного нормального
           распределения для обеспеченности P; значения Φ<sub>P</sub> определяются по стандартным
-          таблицам (например, СП 33-101-2003).</p>
+          таблицам СП 33-101-2003 (приложение Ж).</p>
         </div>
         </body></html>`);
       win.document.close();

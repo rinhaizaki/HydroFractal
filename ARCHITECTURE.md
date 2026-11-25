@@ -288,7 +288,7 @@ D = 1 + h/2
 ### 7.4. Карта и рельеф
 
 - Тайлы: `Sentinel-2 L2A` через STAC + item tiles Planetary Computer → `Esri` → `Google Satellite`; OpenTopoMap отключён.
-- DEM: `cop-dem-glo-30` через Planetary Computer TiTiler, item-тайлы
+- DEM: `cop-dem-glo-30` через Planetary Computer TiTiler (при 500 — `nasadem`), item-тайлы
   `collections/cop-dem-glo-30/items/Copernicus_DSM_COG_10_N{lat}_00_E{lon}_00_DEM/tiles/...`,
   шкала −1000…4000 м.
 - При недоступности сети включается `core/offline_map.py` / `syntheticDem`.
