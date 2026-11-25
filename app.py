@@ -40,6 +40,9 @@ _orig_fetch_dem = map_core.fetch_dem_for_view
 
 def _best_dem_zoom(view_zoom, lat):
     zoom = _orig_best_dem_zoom(view_zoom, lat)
+    if LOCAL_DEMS:
+        # локальный GeoTIFF не зависит от сети — используем родное разрешение
+        return zoom
     if not offline_map.ensure_mode():
         # меньше тайлов → быстрее используется демо-рельеф
         return min(zoom, 10)
@@ -464,6 +467,119 @@ def health():
 # ---------------------------------------------------------------------------
 # Режим «Снимок»
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Локальная ЦМР GeoTIFF (скачана пользователем с EarthExplorer)
+# ---------------------------------------------------------------------------
+LOCAL_DEMS = []
+_LOCAL_DEM_USED = False
+
+
+def _terrain_credit():
+    extra = " · локальный DEM GeoTIFF (EarthExplorer)" if _LOCAL_DEM_USED else ""
+    return map_core.TERRAIN_CREDIT + extra
+
+
+def _parse_dem_geotiff(raw, name):
+    try:
+        import tifffile
+    except ImportError as exc:
+        raise RuntimeError("Для локального DEM нужен tifffile: pip install tifffile") from exc
+    with tifffile.TiffFile(io.BytesIO(raw)) as tf:
+        page = tf.pages[0]
+        arr = np.asarray(page.asarray(), dtype=np.float32)
+        tags = page.tags
+        if 42113 in tags:
+            try:
+                nodata = float(str(tags[42113].value).strip().split('\0')[0])
+                arr = np.where(arr == nodata, np.nan, arr)
+            except (TypeError, ValueError):
+                pass
+        keys = tuple(tags["GeoKeyDirectoryTag"].value) if "GeoKeyDirectoryTag" in tags else ()
+        for i in range(0, len(keys) - 3, 4):
+            if keys[i] == 0 and keys[i + 1] == 1 and keys[i + 3] != 4326:
+                raise ValueError("DEM должен быть в WGS84 (EPSG:4326).")
+        if "ModelTransformationTag" in tags:
+            tr = tags["ModelTransformationTag"].value
+            d_lon, d_lat, lon0, lat0 = float(tr[0]), -float(tr[5]), float(tr[3]), float(tr[7])
+        elif "ModelPixelScaleTag" in tags and "ModelTiepointTag" in tags:
+            sc = tags["ModelPixelScaleTag"].value
+            tie = tags["ModelTiepointTag"].value
+            d_lon, d_lat = abs(float(sc[0])), abs(float(sc[1]))
+            lon0, lat0 = float(tie[3]), float(tie[4])
+        else:
+            raise ValueError("В GeoTIFF нет привязки к координатам.")
+    if arr.ndim != 2 or d_lon <= 0 or d_lat <= 0:
+        raise ValueError("Некорректный DEM GeoTIFF.")
+    return {"name": name, "W": arr.shape[1], "H": arr.shape[0],
+            "lon0": lon0, "lat0": lat0, "dLon": d_lon, "dLat": d_lat,
+            "heights": arr}
+
+
+def _local_dem_for_view(geo, dem_zoom, margin):
+    if not LOCAL_DEMS:
+        return None
+    k = 2.0 ** (dem_zoom - geo["z"])
+    tx0 = int(math.floor(geo["x0"] * k - margin))
+    ty0 = int(math.floor(geo["y0"] * k - margin))
+    tx1 = int(math.floor((geo["x0"] + geo["w"] / map_core.TILE) * k + margin))
+    ty1 = int(math.floor((geo["y0"] + geo["h"] / map_core.TILE) * k + margin))
+    W = max(1, (tx1 - tx0 + 1) * map_core.TILE)
+    H = max(1, (ty1 - ty0 + 1) * map_core.TILE)
+    arr = np.full((H, W), np.nan, np.float32)
+    n = 2.0 ** dem_zoom
+    for y in range(H):
+        gy = ty0 + (y + 0.5) / map_core.TILE
+        lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * gy / n))))
+        for x in range(W):
+            lon = (tx0 + (x + 0.5) / map_core.TILE) / n * 360.0 - 180.0
+            for tile in LOCAL_DEMS:
+                col = int((lon - tile["lon0"]) / tile["dLon"])
+                row = int((tile["lat0"] - lat) / tile["dLat"])
+                if 0 <= row < tile["H"] and 0 <= col < tile["W"]:
+                    h = tile["heights"][row, col]
+                    if np.isfinite(h):
+                        arr[y, x] = h
+                        break
+    finite = int(np.isfinite(arr).sum())
+    if finite < 0.5 * arr.size:
+        return None
+    if finite < arr.size:
+        arr = np.where(np.isfinite(arr), arr, float(np.nanmedian(arr)))
+    global _LOCAL_DEM_USED
+    _LOCAL_DEM_USED = True
+    return arr, {"x0": tx0, "y0": ty0, "z": dem_zoom, "w": W, "h": H,
+                 "view_x0": geo["x0"], "view_y0": geo["y0"], "view_z": geo["z"]}
+
+
+map_core.set_local_dem_provider(_local_dem_for_view)
+
+
+@app.post("/api/dem/upload")
+def api_dem_upload():
+    try:
+        data = request.get_json(force=True) or {}
+        added = []
+        for item in (data.get("files") or [])[:6]:
+            raw = _decode_data_url(item.get("data", ""))
+            tile = _parse_dem_geotiff(raw, item.get("name") or "dem.tif")
+            LOCAL_DEMS.append(tile)
+            added.append({
+                "name": tile["name"], "width": tile["W"], "height": tile["H"],
+                "west": tile["lon0"], "north": tile["lat0"],
+                "east": tile["lon0"] + tile["dLon"] * tile["W"],
+                "south": tile["lat0"] - tile["dLat"] * tile["H"],
+            })
+        return jsonify({"ok": True, "tiles": added})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc) or exc.__class__.__name__}), 400
+
+
+@app.post("/api/dem/clear")
+def api_dem_clear():
+    LOCAL_DEMS.clear()
+    return jsonify({"ok": True})
+
+
 @app.post("/api/upload")
 def api_upload():
     """Нормализует загруженный снимок и возвращает его для холста."""
@@ -613,6 +729,8 @@ def _render_map(lon, lat, zoom, width, height, source, relief=False):
 
 @app.post("/api/map/view")
 def api_map_view():
+    global _LOCAL_DEM_USED
+    _LOCAL_DEM_USED = False
     try:
         data = request.get_json(force=True) or {}
         lon, lat, zoom, w, h, source = _map_params(data)
@@ -621,7 +739,7 @@ def api_map_view():
         return jsonify({
             "ok": True,
             "image": _encode_jpeg(img),
-            "credit": f"{map_core.SOURCES[source]['credit']} · {map_core.TERRAIN_CREDIT}",
+            "credit": f"{map_core.SOURCES[source]['credit']} · {_terrain_credit()}",
             "demo": not offline_map.ensure_mode(),
             "cell_m": round(map_core.resolution_m(lat, zoom), 2),
             "geo": {"x0": geo["x0"], "y0": geo["y0"], "z": geo["z"],
@@ -633,6 +751,8 @@ def api_map_view():
 
 @app.post("/api/map/analyze")
 def api_map_analyze():
+    global _LOCAL_DEM_USED
+    _LOCAL_DEM_USED = False
     try:
         data = request.get_json(force=True) or {}
         lon, lat, zoom, w, h, source = _map_params(data)
@@ -668,7 +788,7 @@ def api_map_analyze():
             "ok": True,
             "image": _encode_png(overlay.convert("RGB")),
             "credit": (f"{map_core.SOURCES[source]['credit']} · "
-                       f"{map_core.TERRAIN_CREDIT}"),
+                       f"{_terrain_credit()}"),
             "demo": not offline_map.ensure_mode(),
             "map": {
                 "area_km2": round(st["area_km2"], 3),

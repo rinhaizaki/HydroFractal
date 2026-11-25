@@ -25,6 +25,7 @@
     mapCredit: $('mapCredit'), mapZoom: $('mapZoom'), mapCoords: $('mapCoords'),
     mapLat: $('mapLat'), mapLon: $('mapLon'), mapMarkText: $('mapMarkText'),
     ndwiThreshold: $('ndwiThreshold'), mapViewMode: $('mapViewMode'),
+    demFile: $('demFile'), demLocalInfo: $('demLocalInfo'),
     leafletWrap: $('leafletMap'),
     mapMinimapBox: $('mapMinimapBox'), mapMinimapCanvas: $('mapMinimapCanvas'),
     status: $('status'), statusRight: $('statusRight'),
@@ -2131,6 +2132,46 @@
         m.label = e.target.value.trim(); renderMarksList(); rebuildMarkLayer(); renderMap();
       }
     });
+    $('demFile').addEventListener('change', async (e) => {
+      const files = Array.from(e.target.files || []);
+      if (!files.length) return;
+      if (files.length > 6) { toast('Загрузите не более 6 GeoTIFF-файлов DEM за раз.'); e.target.value = ''; return; }
+      busy(true, 'Читаем DEM GeoTIFF…');
+      try {
+        const payload = { files: [] };
+        for (const file of files) {
+          const data = await new Promise((resolve, reject) => {
+            const rd = new FileReader();
+            rd.onload = () => resolve(String(rd.result));
+            rd.onerror = () => reject(new Error('Не удалось прочитать ' + file.name));
+            rd.readAsDataURL(file);
+          });
+          payload.files.push({ name: file.name, data });
+        }
+        const resp = await api('/api/dem/upload', payload);
+        const tiles = resp.tiles || [];
+        const names = tiles.map((t) => t.name).join(', ');
+        const full = tiles.map((t) =>
+          `${t.name} (${t.west.toFixed(3)}…${t.east.toFixed(3)}°E, ${t.south.toFixed(3)}…${t.north.toFixed(3)}°N)`).join('; ');
+        el.demLocalInfo.textContent = `локальный DEM: ${names}`;
+        el.demLocalInfo.title = full;
+        status(`DEM GeoTIFF загружен: ${full}. Расчёт идёт по этим высотам, если карта находится в зоне покрытия файла.`);
+        toast('DEM GeoTIFF загружен');
+        await loadMapView(true);
+        if (S.map.relief) renderMap();
+      } catch (err) {
+        status('Ошибка загрузки DEM: ' + err.message, true);
+        toast('Не удалось прочитать DEM GeoTIFF');
+      } finally { busy(false); e.target.value = ''; }
+    });
+    $('btnDemClear').addEventListener('click', async () => {
+      await api('/api/dem/clear', {});
+      el.demLocalInfo.textContent = 'локальный DEM: нет';
+      el.demLocalInfo.title = '';
+      status('Локальный DEM удалён — снова используются открытые источники высот.');
+      await loadMapView(true);
+      if (S.map.relief) renderMap();
+    });
     $('btnNdwi').addEventListener('click', toggleNdwiLayer);
     $('btnWaterSelect').addEventListener('click', selectWaterObjects);
     $('btnMapCatch').addEventListener('click', mapAnalyze);
@@ -2671,6 +2712,8 @@ N(ε) на малых размерах ячеек и завышают D.
 разрешение 300 dpi, источник и дата.
 Если оставить пустым — будет «not set».`,
     mapSource: 'Подложка Sentinel-2 L2A через Planetary Computer STAC + TiTiler; резерв — Esri / Google Satellite. OpenTopoMap отключён.',
+    demFile: 'GeoTIFF с высотами (SRTM/ASTER) с EarthExplorer — после загрузки расчёт идёт по этим данным.',
+    btnDemClear: 'Убрать загруженный GeoTIFF и вернуться к сетевым источникам ЦМР.',
     ndwiThreshold: 'Порог NDWI от −1 до +1 включительно. Вода учитывается при NDWI ≥ порога (по умолчанию −0,25).',
     mapRelief: 'Показать отмывку по Copernicus DEM GLO-30 (Planetary Computer). Та же ЦМР используется для расчёта водосбора и главного русла.',
     mapMarkText: 'Подпись для следующей метки на карте. Оставьте пустым — будет автоматическая нумерация.',
