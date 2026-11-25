@@ -523,7 +523,8 @@ def api_map_analyze():
 
         overlay = map_core.overlay_on_image(
             img, geo, res["dgeo"], catchment=res["catchment"],
-            main_line=res["main_line"], network=res["network"])
+            main_line=res["main_line"], network=res["network"],
+            preview=res.get("preview"))
         tx, ty = map_core.lonlat_to_tile(outlet_lon, outlet_lat, zoom)
         overlay = map_core.draw_outlet(
             overlay, (tx - geo["x0"]) * map_core.TILE,
@@ -543,6 +544,7 @@ def api_map_analyze():
                 "area_km2": round(st["area_km2"], 3),
                 "channel_km": round(st["channel_km"], 3),
                 "cells": st["cells"],
+                "preview_cells": st.get("preview_cells", st["cells"]),
                 "line_cells": st["line_cells"],
                 "network_cells": st["network_cells"],
                 "threshold": round(st["threshold"], 2),
