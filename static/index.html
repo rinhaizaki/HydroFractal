@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Гидрофрактал — веб-версия</title>
+  <meta name="description" content="Определение фрактальной размерности реки по спутниковому снимку и карте водосбора">
+  <script>
+    // На GitHub Pages нет серверного API — включаем локальные вычисления.
+    window.HF_STATIC = /github\.io$/i.test(location.hostname) || location.protocol === 'file:' ||
+      /[?&]static=1/.test(location.search);
+  </script>
+  <link rel="stylesheet" href="styles.css?v=3">
+</head>
+<body>
+<div class="app-shell">
+
+  <!-- ============================ МЕНЮ ============================ -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">≋</span>
+      <div>
+        <div class="brand-title">Гидрофрактал</div>
+        <div class="brand-sub">фрактальная размерность рек · веб-версия</div>
+      </div>
+    </div>
+
+    <nav class="menu" aria-label="Главное меню">
+      <div class="menu-group">
+        <button class="menu-trigger" data-menu="file">Файл</button>
+        <div class="menu-dropdown" id="menu-file">
+          <button data-act="open">📂 Загрузить снимок… <span class="key">Ctrl+O</span></button>
+          <button data-act="close">🗑 Закрыть снимок</button>
+          <hr>
+          <button data-act="save-mask">💾 Сохранить маску (PNG)</button>
+          <button data-act="save-report">📄 Сохранить отчёт (PDF)</button>
+        </div>
+      </div>
+      <div class="menu-group">
+        <button class="menu-trigger" data-menu="edit">Правка</button>
+        <div class="menu-dropdown" id="menu-edit">
+          <button data-act="undo">↶ Отменить <span class="key">Ctrl+Z</span></button>
+          <button data-act="redo">↷ Повторить <span class="key">Ctrl+Y</span></button>
+          <hr>
+          <button data-act="clear-mask">Очистить маску</button>
+          <button data-act="reset-view">Сбросить масштаб</button>
+        </div>
+      </div>
+      <div class="menu-group">
+        <button class="menu-trigger" data-menu="view">Вид</button>
+        <div class="menu-dropdown" id="menu-view">
+          <button data-act="view-overlay">Снимок + маска</button>
+          <button data-act="view-image">Только снимок</button>
+          <button data-act="view-mask">Только маска</button>
+          <hr>
+          <button data-act="toggle-minimap">🗺 Карта просмотра</button>
+          <button data-act="zoom-fit">⛶ Показать всё</button>
+        </div>
+      </div>
+      <div class="menu-group">
+        <button class="menu-trigger" data-menu="tabs">Переход</button>
+        <div class="menu-dropdown" id="menu-tabs">
+          <button data-act="tab-photo">📷 Фотоснимок</button>
+          <button data-act="tab-map">🗺 Карта и водосбор</button>
+        </div>
+      </div>
+      <div class="menu-group">
+        <button class="menu-trigger" data-menu="help">Справка</button>
+        <div class="menu-dropdown" id="menu-help">
+          <button data-act="help">Инструкция по работе</button>
+          <button data-act="about">О программе</button>
+        </div>
+      </div>
+    </nav>
+
+    <div class="top-right">
+      <span class="online-dot" id="onlineDot" title="Состояние сервера"></span>
+      <span id="onlineText">сервер готов</span>
+    </div>
+  </header>
+
+  <!-- ======================== ИНСТРУМЕНТЫ ======================== -->
+  <div class="toolbars">
+    <div class="toolbar">
+      <button class="btn primary" id="btnLoad">📂 Загрузить снимок</button>
+      <span class="sep"></span>
+      <label class="field-label" for="method">Способ выделения:</label>
+      <select id="method" class="select wide">
+        <option value="color">По цвету точки (HSV)</option>
+        <option value="dark">Тёмная вода (яркость)</option>
+        <option value="hybrid">Комбинация признаков</option>
+      </select>
+      <label class="field-label" for="tol">Допуск по цвету:</label>
+      <input type="range" id="tol" min="10" max="160" value="60" class="range">
+      <input type="number" id="tolNum" min="1" max="180" value="60" class="num">
+      <label class="check"><input type="checkbox" id="largest" checked> Только крупнейшая область воды</label>
+    </div>
+
+    <div class="toolbar">
+      <label class="field-label" for="tool">Инструмент:</label>
+      <select id="tool" class="select tool-select">
+        <option value="point">🖱 Точка расхода (створ) — выбрать реку</option>
+        <option value="colorpoint">➕ Доп. точка цвета — добавить оттенок</option>
+        <option value="pan">✋ Двигать — панорамирование снимка</option>
+        <option value="eraser">🧹 Ластик — стереть лишнее из выделения</option>
+        <option value="brush">🖌 Кисть — дорисовать выделение вручную</option>
+      </select>
+      <label class="field-label" for="brush">Размер ластика/кисти:</label>
+      <input type="range" id="brush" min="2" max="80" value="18" class="range">
+      <input type="number" id="brushNum" min="2" max="120" value="18" class="num">
+      <span class="sep"></span>
+      <button class="btn" id="btnUndo" title="Ctrl+Z" disabled>↶ Назад</button>
+      <button class="btn" id="btnRedo" title="Ctrl+Y" disabled>↷ Вперёд</button>
+      <label class="field-label" for="object">Объект расчёта:</label>
+      <select id="object" class="select">
+        <option value="skeleton">Скелет (центр русла)</option>
+        <option value="boundary">Граница воды (контур)</option>
+        <option value="mask">Заполненная маска</option>
+      </select>
+    </div>
+
+    <div class="toolbar">
+      <span class="field-label">Ориентация:</span>
+      <button class="btn small" data-rotate="rot1" title="Повернуть против часовой стрелки">⟲ 90°</button>
+      <button class="btn small" data-rotate="rot3" title="Повернуть по часовой стрелке">⟳ 90°</button>
+      <button class="btn small" data-rotate="rot2">180°</button>
+      <button class="btn small" data-rotate="fliph">⇋ отразить</button>
+      <button class="btn small" data-rotate="flipv">⇵ отразить</button>
+      <span class="sep"></span>
+      <label class="field-label" for="maxDivs">Число делений сетки:</label>
+      <input type="range" id="maxDivs" min="10" max="120" value="60" class="range short">
+      <input type="number" id="maxDivsNum" min="3" max="120" value="60" class="num">
+      <span class="sep"></span>
+      <button class="btn small" id="btnZoomOut" title="Уменьшить">🔍−</button>
+      <button class="btn small" id="btnZoomIn" title="Увеличить">🔍+</button>
+      <button class="btn small" id="btnZoomFit">⛶ Всё</button>
+      <button class="btn small" id="btnMinimap">🗺 Карта</button>
+    </div>
+  </div>
+
+  <!-- ========================== ВКЛАДКИ ========================== -->
+  <main class="main">
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="photo" role="tab" aria-selected="true">📷 Фотоснимок</button>
+      <button class="tab" data-tab="map" role="tab" aria-selected="false">🗺 Карта и водосбор</button>
+    </div>
+
+    <!-- ---------- вкладка «Фотоснимок» ---------- -->
+    <section class="panel active" id="panel-photo" role="tabpanel">
+      <div class="workspace">
+        <div class="work-left">
+          <div class="action-row">
+            <button class="btn accent" id="btnSegment">🌊 Выделить реку</button>
+            <button class="btn accent" id="btnAnalyze">📐 Рассчитать D</button>
+            <label class="field-label" for="viewMode">Вид:</label>
+            <select id="viewMode" class="select">
+              <option value="overlay">Снимок + маска</option>
+              <option value="image">Только снимок</option>
+              <option value="mask">Только маска</option>
+            </select>
+            <button class="btn" id="btnSaveMask">💾 Сохранить маску (PNG)</button>
+            <button class="btn" id="btnSaveReport">📄 Сохранить отчёт (PDF)</button>
+          </div>
+          <p class="warning">
+            Важно: оставьте выделенной только ту часть реки, которая <b>ВЫШЕ створа</b>
+            (точка 1). Всё ниже по течению сотрите «🧹 Ластиком» — иначе расчёт D будет неверным.
+          </p>
+          <div class="canvas-wrap" id="photoWrap">
+            <canvas id="photoCanvas"></canvas>
+            <div class="placeholder" id="photoPlaceholder">
+              <span class="placeholder-icon">≋</span>
+              <strong>Загрузите спутниковый снимок реки</strong>
+              <span>кликните по руслу (створ) → «Выделить реку» → ластиком уберите всё ниже створа → «Рассчитать D»</span>
+              <span>
+                <button class="btn accent" id="btnLoadBig">📂 Выбрать файл</button>
+                <button class="btn" id="btnDemoImage">Попробовать на примере</button>
+              </span>
+            </div>
+            <div class="minimap" id="minimapBox" hidden>
+              <div class="minimap-title">Карта просмотра</div>
+              <canvas id="minimapCanvas" width="190" height="130"></canvas>
+            </div>
+          </div>
+          <div class="canvas-foot">
+            <span id="photoInfo">Снимок не загружен</span>
+            <span id="cursorInfo">x: —, y: —</span>
+          </div>
+        </div>
+
+        <aside class="results">
+          <div class="results-head">
+            <h2>Результаты</h2>
+            <span class="badge" id="resultBadge">ожидание</span>
+          </div>
+          <div class="scale-row">
+            <label for="scaleText">Масштаб, м/пиксель:</label>
+            <input id="scaleText" type="text" placeholder="например, 2.5" size="10">
+            <span class="hint">попадёт в метаданные PNG</span>
+          </div>
+          <pre class="report" id="reportText">Здесь появятся результаты расчёта.
+
+Порядок действий:
+  1) Загрузите спутниковый снимок реки.
+  2) Отметьте ЛКМ точку на реке — створ, данные по которому вас интересуют.
+  3) Нажмите «Выделить реку» и при необходимости поправьте маску.
+  4) ВАЖНО: сотрите ластиком ВСЁ, что ниже по течению от створа.
+  5) Нажмите «Рассчитать D».
+  6) Нажмите «Сохранить отчёт (PDF)».</pre>
+          <div class="plot-box">
+            <div class="box-title">График log N(ε) — метод Кантора (квадраты)</div>
+            <img id="plotImg" alt="График зависимости log N(ε) от log(1/ε)" hidden>
+            <div class="plot-empty" id="plotEmpty">График появится после расчёта</div>
+          </div>
+          <details id="tableDetails">
+            <summary>Таблица измерений n / ε / N(ε)</summary>
+            <div class="table-scroll" id="tableWrap"></div>
+          </details>
+          <details id="streamDetails">
+            <summary>Характеристики стока по D</summary>
+            <div class="table-scroll" id="streamWrap"></div>
+          </details>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ---------- вкладка «Карта и водосбор» ---------- -->
+    <section class="panel" id="panel-map" role="tabpanel">
+      <div class="map-toolbar">
+        <label class="field-label" for="mapSource">Слой:</label>
+        <select id="mapSource" class="select">
+          <option value="esri">Esri (спутник)</option>
+          <option value="topo">OpenTopoMap (топо)</option>
+        </select>
+        <label class="check"><input type="checkbox" id="mapRelief"> Рельеф</label>
+        <button class="btn small" id="btnMapHome" title="Вернуться к центру">⌂</button>
+        <button class="btn accent" id="btnMapCatch">🌊 Построить водосбор</button>
+        <button class="btn accent" id="btnMapDim">📐 Рассчитать D</button>
+        <button class="btn" id="btnMapPdf">💾 Отчёт PDF</button>
+        <span class="map-coords" id="mapCoords">41.70000° E, 43.50000° N</span>
+      </div>
+      <div class="map-workspace">
+        <div class="map-left">
+          <div class="canvas-wrap map-canvas-wrap" id="mapWrap">
+            <canvas id="mapCanvas"></canvas>
+            <div class="placeholder" id="mapPlaceholder">
+              <span class="placeholder-icon">🗺</span>
+              <strong>Карта и водосбор</strong>
+              <span>Перетаскивайте карту, масштабируйте колесом мыши, кликните по руслу — и постройте водосбор</span>
+            </div>
+          </div>
+          <div class="canvas-foot map-foot">
+            <span id="mapCredit">Карта: Esri · Рельеф: AWS Terrain Tiles</span>
+            <span id="mapZoom">z11 · 114 м/пиксель</span>
+          </div>
+        </div>
+        <aside class="results map-results">
+          <div class="results-head"><h2>Результаты по карте</h2><span class="badge" id="mapBadge">ожидание</span></div>
+          <pre class="report" id="mapReport">КАРТА И ВОДОСБОР
+
+1. Перетаскивайте карту ЛКМ, меняйте масштаб колесом мыши.
+2. Кликните по руслу реки — появится красный маркер створа.
+3. «Построить водосбор» — D8-гидрология по рельефу SRTM.
+4. «Рассчитать D» — канторовский метод по главному руслу.
+5. «Отчёт PDF» — сводный отчёт с картой и морфометрией.</pre>
+          <div class="plot-box">
+            <div class="box-title">График log N(ε) — главное русло</div>
+            <img id="mapPlotImg" alt="График для главного русла" hidden>
+            <div class="plot-empty" id="mapPlotEmpty">График появится после расчёта</div>
+          </div>
+          <details id="mapTableDetails">
+            <summary>Таблица измерений n / ε / N(ε)</summary>
+            <div class="table-scroll" id="mapTableWrap"></div>
+          </details>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <footer class="statusbar">
+    <span class="status-main" id="status">Готово. Загрузите снимок или откройте вкладку «Карта и водосбор».</span>
+    <span id="statusRight">Инструмент: 🖱 Точка расхода (створ)</span>
+  </footer>
+</div>
+
+<input type="file" id="fileInput" accept="image/*,.tif,.tiff" hidden>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-card">
+    <button class="modal-close" id="modalClose" title="Закрыть">✕</button>
+    <h2 id="modalTitle">Инструкция</h2>
+    <div id="modalBody"></div>
+    <button class="btn accent" id="modalOk">Понятно</button>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="client-core.js?v=1"></script>
+<script src="app.js?v=3"></script>
+</body>
+</html>
