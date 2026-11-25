@@ -4,8 +4,8 @@
 
 Что делает
 ----------
-1. Качает и кэширует тайлы карты (Esri World Imagery, OpenTopoMap).
-2. Качает тайлы рельефа (AWS Terrain Tiles, кодировка terrarium)
+1. Качает и кэширует тайлы карты (Sentinel-2 L2A через Planetary Computer, Esri).
+2. Качает тайлы ЦМР (Copernicus DEM GLO-30 через Planetary Computer / TiTiler)
    и декодирует их в НАСТОЯЩИЕ высоты в метрах.
 3. Собирает мозаику под текущее окно карты.
 4. Считает гидрологию по ЦМР: заполнение впадин, направления стока D8,
@@ -19,7 +19,9 @@
 from __future__ import annotations
 
 import io
+import json
 import math
+import urllib.parse
 import os
 import threading
 import urllib.error
@@ -43,18 +45,25 @@ SOURCES = {
         "credit": "Снимок: Esri, Maxar, Earthstar Geographics",
         "max_zoom": 18,
     },
-    "topo": {
-        "name": "OpenTopoMap (топо)",
-        "url": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-        "sub": ["a", "b", "c"],
-        "credit": "Карта: © OpenTopoMap (CC-BY-SA), данные © OpenStreetMap",
-        "max_zoom": 17,
+    "sentinel": {
+        "name": "Sentinel-2 L2A (Planetary Computer)",
+        "url": ("https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/"
+                "WebMercatorQuad/{z}/{x}/{y}@1x?collection=sentinel-2-l2a"
+                "&item={item}&assets=visual&asset_bidx=visual%7C1%2C2%2C3&nodata=0"
+                "&format=png"),
+        "credit": "Sentinel-2 L2A: Copernicus / Planetary Computer",
+        "max_zoom": 14,
     },
 }
 
-TERRAIN_URL = ("https://s3.amazonaws.com/elevation-tiles-prod/"
-               "terrarium/{z}/{x}/{y}.png")
-TERRAIN_CREDIT = "Рельеф: Mapzen / AWS Terrain Tiles"
+# Copernicus DEM GLO-30 через Planetary Computer (TiTiler / item tiles).
+DEM_COLLECTION = "cop-dem-glo-30"
+DEM_RESCALE = (-1000.0, 4000.0)
+PC_DEM_TILES = ("https://planetarycomputer.microsoft.com/api/data/v1/collections/"
+                "cop-dem-glo-30/items/{item}/tiles/WebMercatorQuad/"
+                "{z}/{x}/{y}@1x?assets=data&rescale=-1000,4000&format=png")
+PC_STAC_SEARCH = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
+TERRAIN_CREDIT = "ЦМР: Copernicus DEM GLO-30 / Planetary Computer"
 
 UA = {"User-Agent": "Gidrofraktal/1.0 (river fractal analysis)"}
 
@@ -100,9 +109,9 @@ def _http_get(url, timeout=15):
         return resp.read()
 
 
-def fetch_tile(source, z, x, y, use_cache=True, force=False):
+def fetch_tile(source, z, x, y, use_cache=True, force=False, item=None):
     """Возвращает bytes PNG или None при ошибке."""
-    key = "esri" if source == "esri" else "topo"
+    key = "esri" if source == "esri" else "sentinel"
     cpath = _cache_path(key, z, x, y) if use_cache else None
 
     if cpath and os.path.exists(cpath) and not force:
@@ -116,9 +125,10 @@ def fetch_tile(source, z, x, y, use_cache=True, force=False):
 
     s = SOURCES[key]
     try:
-        if "{s}" in s["url"]:
-            sub = s["sub"][(x + y) % len(s["sub"])]
-            url = s["url"].format(s=sub, z=z, x=x, y=y)
+        if key == "sentinel":
+            if not item:
+                return None
+            url = s["url"].format(z=z, x=x, y=y, item=urllib.parse.quote(item, safe=""))
         else:
             url = s["url"].format(z=z, x=x, y=y)
         data = _http_get(url)
@@ -136,9 +146,24 @@ def fetch_tile(source, z, x, y, use_cache=True, force=False):
     return data
 
 
+def _dem_item_name(lon, lat):
+    """Имя 1°×1° тайла Copernicus DEM GLO-30 в Planetary Computer."""
+    ilon = int(math.floor(lon))
+    ilat = int(math.floor(lat))
+    return ("Copernicus_DSM_COG_10_{latdir}{lat}_00_{londir}{lon:03d}_00_DEM"
+            .format(lat=abs(ilat), latdir="N" if ilat >= 0 else "S",
+                    lon=abs(ilon), londir="E" if ilon >= 0 else "W"))
+
+
+def _pc_dem_url(z, x, y):
+    lon, lat = tile_to_lonlat(x + 0.5, y + 0.5, z)
+    item = _dem_item_name(lon, lat)
+    return PC_DEM_TILES.format(item=item, z=z, x=x, y=y)
+
+
 def fetch_terrain_tile(z, x, y, use_cache=True):
-    """Тайл рельефа → массив высот (256×256, float32) или None."""
-    cpath = _cache_path("terrain", z, x, y) if use_cache else None
+    """Тайл Copernicus DEM GLO-30 → высоты в метрах (256×256) или None."""
+    cpath = _cache_path("dem-pc", z, x, y) if use_cache else None
     data = None
     if cpath and os.path.exists(cpath):
         try:
@@ -148,7 +173,7 @@ def fetch_terrain_tile(z, x, y, use_cache=True):
             data = None
     if data is None:
         try:
-            data = _http_get(TERRAIN_URL.format(z=z, x=x, y=y))
+            data = _http_get(_pc_dem_url(z, x, y))
         except Exception:
             return None
         if cpath:
@@ -160,11 +185,37 @@ def fetch_terrain_tile(z, x, y, use_cache=True):
             except Exception:
                 pass
     try:
-        im = Image.open(io.BytesIO(data)).convert("RGB")
+        im = Image.open(io.BytesIO(data)).convert("RGBA")
         a = np.asarray(im).astype(np.float32)
-        return (a[..., 0] * 256.0 + a[..., 1] + a[..., 2] / 256.0) - 32768.0
+        # TiTiler кодирует одноканальный DEM в RGB: R=G=B = LIN(h, -1000, 4000).
+        lo, hi = DEM_RESCALE
+        heights = a[..., 0] / 255.0 * (hi - lo) + lo
+        heights[a[..., 3] < 128] = np.nan  # вне 1° тайла Copernicus DEM
+        return heights
     except Exception:
         return None
+
+
+def find_sentinel_item(lon, lat, radius=0.16, max_cloud=25):
+    """Ищем свежую сцену Sentinel-2 L2A через STAC Planetary Computer."""
+    params = urllib.parse.urlencode({
+        "collections": "sentinel-2-l2a",
+        "bbox": f"{lon-radius},{lat-radius},{lon+radius},{lat+radius}",
+        "datetime": "2024-01-01/2026-12-31",
+        "limit": "1",
+        "query": json.dumps({"eo:cloud_cover": {"lt": max_cloud}}),
+    })
+    data = json.loads(_http_get(PC_STAC_SEARCH + "?" + params).decode("utf-8"))
+    feats = data.get("features") or []
+    return feats[0]["id"] if feats else None
+
+
+def sentinel_item_url(item, z, x, y):
+    """XYZ-тайл выбранной сцены Sentinel-2 L2A через TiTiler."""
+    return ("https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/"
+            "WebMercatorQuad/{z}/{x}/{y}@1x?collection=sentinel-2-l2a&item={item}"
+            "&assets=visual&asset_bidx=visual%7C1%2C2%2C3&nodata=0&format=png"
+            .format(item=urllib.parse.quote(item, safe=""), z=z, x=x, y=y))
 
 
 # ---------------------------------------------------------------------------
@@ -220,13 +271,26 @@ def render_view(center_lon, center_lat, zoom, width, height,
     max_n = 2 ** zoom
     coords = [(tx, ty) for (tx, ty) in coords if 0 <= tx < max_n and 0 <= ty < max_n]
 
+    sentinel_item = None
+    fetch_source = source
+    if source == "sentinel":
+        try:
+            sentinel_item = find_sentinel_item(center_lon, center_lat)
+        except Exception:
+            sentinel_item = None
+        if not sentinel_item:
+            fetch_source = "esri"  # резерв, если STAC недоступен
+            if progress:
+                progress("Sentinel-2 недоступен — используется резервный спутниковый снимок.")
+
     if progress:
         progress(f"Загрузка карты: тайлов {len(coords)}…")
 
     results = {}
     def job(c):
         tx, ty = c
-        results[c] = fetch_tile(source, zoom, tx, ty, use_cache=use_cache)
+        results[c] = fetch_tile(fetch_source, zoom, tx, ty,
+                                use_cache=use_cache, item=sentinel_item)
     with ThreadPoolExecutor(max_workers=8) as ex:
         list(ex.map(job, coords))
 
@@ -310,13 +374,13 @@ def fetch_dem(center_lon, center_lat, zoom, span_x=2, span_y=2,
     return arr, geo
 
 
-NATIVE_DEM_ZOOM = 12      # ~30 м/пиксель — родное разрешение SRTM
+NATIVE_DEM_ZOOM = 12      # ~30 м/пиксель — родное разрешение Copernicus DEM GLO-30
 
 
 def best_dem_zoom(view_zoom, lat):
     """Зум рельефа: не выше родного разрешения данных (~30 м).
 
-    Тайлы рельефа — это SRTM 30 м, разложенный по уровням. На z13+ он
+    Тайлы рельефа — Copernicus DEM GLO-30, разложенный по уровням. На z13+ он
     просто интерполируется: деталей больше не становится, зато D8
     начинает «видеть» шум интерполяции и поток рассыпается.
     Поэтому выше z12 не поднимаемся.
@@ -628,12 +692,19 @@ def analyse_map(view_geo, outlet_lon, outlet_lat,
             "Створ попал на водораздел или в бессточную впадину.\n"
             "Кликните по видимому руслу реки.")
 
+    try:
+        from scipy.ndimage import binary_dilation
+        preview = binary_dilation(catch, iterations=2)
+    except Exception:
+        preview = catch.copy()
+
     thr = max(3.0, threshold_frac * float(acc[catch].max()))
     net = catch & (acc >= thr)
     line = main_channel(fdir, acc, catch, oy, ox)
 
     stats = {
         "cells": int(catch.sum()),
+        "preview_cells": int(preview.sum()),
         "area_km2": float(catch.sum()) * cell * cell / 1e6,
         "line_cells": int(line.sum()),
         "channel_km": float(line.sum()) * cell / 1000.0,
@@ -649,6 +720,7 @@ def analyse_map(view_geo, outlet_lon, outlet_lat,
     return {
         "dem": dem, "filled": filled, "fdir": fdir, "acc": acc,
         "catchment": catch, "network": net, "main_line": line,
+        "preview": preview,
         "outlet": (ox, oy), "dgeo": dgeo, "stats": stats,
         "outlet_lon": outlet_lon, "outlet_lat": outlet_lat,
     }
@@ -659,7 +731,7 @@ def analyse_map(view_geo, outlet_lon, outlet_lat,
 # ---------------------------------------------------------------------------
 def overlay_on_image(base_img, geo, dgeo, catchment=None,
                      main_line=None, network=None, show_relief=False,
-                     dem=None):
+                     dem=None, preview=None):
     """Кладёт слои расчёта на картинку карты. Возвращает PIL.Image."""
     img = base_img.convert("RGB").copy()
     if show_relief and dem is not None:
@@ -674,12 +746,17 @@ def overlay_on_image(base_img, geo, dgeo, catchment=None,
     draw = ImageDraw.Draw(img, "RGBA")
 
     ch, cw = catchment.shape
-    # найти границы водосбора в пикселях рельефа
+    # найти границы водосбора в пикселях рельефа (включая предварительную область)
     ys, xs = np.nonzero(catchment)
+    if preview is not None:
+        pys, pxs = np.nonzero(preview)
+        if pys.size:
+            ys = np.concatenate([ys, pys])
+            xs = np.concatenate([xs, pxs])
     if ys.size == 0:
         return img
-    r0, r1 = ys.min(), ys.max()
-    c0, c1 = xs.min(), xs.max()
+    r0, r1 = int(ys.min()), int(ys.max())
+    c0, c1 = int(xs.min()), int(xs.max())
 
     def dem_to_screen(row, col):
         # пиксель рельефа → lon/lat → тайл-координаты окна → пиксели окна
@@ -698,14 +775,21 @@ def overlay_on_image(base_img, geo, dgeo, catchment=None,
     cell_px = max(1.0, abs(px1 - px0), abs(py1 - py0))
     step = max(1, int(round(cell_px)))
     # заливаем ровно клетками экрана: соседние прямоугольники стыкуются
-    for row in range(r0, r1 + 1, step):
-        for col in range(c0, c1 + 1, step):
-            if not catchment[row, col]:
-                continue
-            px, py = dem_to_screen(row, col)
-            if -step <= px <= W + step and -step <= py <= H + step:
-                draw.rectangle([px, py, px + cell_px + 0.6, py + cell_px + 0.6],
-                               fill=(156, 167, 90, 78))
+    def fill_mask(mask, color):
+        for row in range(r0, r1 + 1, step):
+            for col in range(c0, c1 + 1, step):
+                if row >= mask.shape[0] or col >= mask.shape[1] or not mask[row, col]:
+                    continue
+                px, py = dem_to_screen(row, col)
+                if -step <= px <= W + step and -step <= py <= H + step:
+                    draw.rectangle([px, py, px + cell_px + 0.6, py + cell_px + 0.6],
+                                   fill=color)
+
+    # синий — предварительная (расширенная) область водосбора
+    if preview is not None:
+        fill_mask(preview, (70, 130, 200, 55))
+    # оливковый — уточнённый водосбор
+    fill_mask(catchment, (156, 167, 90, 78))
 
     # --- контур водосбора ---
     from scipy.ndimage import binary_erosion

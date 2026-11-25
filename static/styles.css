@@ -180,6 +180,11 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 /* убираем флаг в атрибуции Leaflet — нужен только текст источника */
 .leaflet-attribution-flag { display: none !important; }
 .btn.selected-accent { background: var(--burgundy); border-color: var(--red); color: #fff; font-weight: 600; }
+.leaflet-tooltip.hf-mark-tip {
+  background: var(--burgundy); color: #fff; border: 1px solid #fff;
+  border-radius: 5px; font-weight: 600; padding: 2px 6px;
+  box-shadow: 0 1px 5px rgba(95,0,1,.35);
+}
 
 .placeholder {
   position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -274,6 +279,20 @@ table.data td:first-child { text-align: left; }
 .modal-close { position: absolute; top: 10px; right: 12px; border: 0; background: transparent; font-size: 18px; color: var(--hint); }
 .modal-card > .btn { margin-top: 12px; }
 .modal-card > .btn + .btn { margin-left: 8px; }
+.confirm-card { max-width: 480px; }
+.confirm-actions { display: flex; gap: 8px; margin-top: 16px; }
+.confirm-actions .btn { margin-top: 0; }
+
+/* BEST-EFFORT: затрудняем копирование и снимки интерфейса. */
+body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.leaflet-container, .report { -webkit-user-select: text; user-select: text; }
+.screenshot-shield {
+  position: fixed; inset: 0; z-index: 500;
+  display: grid; place-items: center;
+  background: rgba(95, 0, 1, .92); color: #fff;
+  font-size: 22px; font-weight: 700; letter-spacing: .5px;
+}
+.screenshot-shield[hidden] { display: none; }
 
 .toast {
   position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%);
@@ -309,3 +328,5 @@ table.data td:first-child { text-align: left; }
   .field-label { font-size: 10.5px; }
   .warning { font-size: 10.5px; }
 }
+
+@media print { body { display: none !important; } }

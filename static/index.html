@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Гидрофрактал — веб-версия</title>
+  <title>Гидрофрактал — анализ рек</title>
   <meta name="description" content="Определение фрактальной размерности реки по спутниковому снимку и карте водосбора">
   <script>
     // На GitHub Pages нет серверного API — включаем локальные вычисления.
@@ -11,7 +11,7 @@
       /[?&]static=1/.test(location.search);
   </script>
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css?v=1">
-  <link rel="stylesheet" href="styles.css?v=6">
+  <link rel="stylesheet" href="styles.css?v=8">
 </head>
 <body>
 <div class="app-shell">
@@ -22,7 +22,7 @@
       <span class="brand-mark" aria-hidden="true">≋</span>
       <div>
         <div class="brand-title">Гидрофрактал</div>
-        <div class="brand-sub">фрактальная размерность рек · веб-версия</div>
+        <div class="brand-sub">фрактальная размерность рек · ГИС-анализ</div>
       </div>
     </div>
 
@@ -230,10 +230,14 @@
       <div class="map-toolbar">
         <label class="field-label" for="mapSource">Слой:</label>
         <select id="mapSource" class="select">
-          <option value="esri">Esri (спутник)</option>
-          <option value="topo">OpenTopoMap (топо)</option>
+          <option value="sentinel">Sentinel-2 (Copernicus)</option>
+          <option value="esri">Esri (резервный спутник)</option>
         </select>
-        <label class="check"><input type="checkbox" id="mapRelief"> Рельеф</label>
+        <label class="check"><input type="checkbox" id="mapRelief"> ЦМР / рельеф</label>
+        <button class="btn small" id="btnNdwi" title="Показать или скрыть слой NDWI по Sentinel-2">💧 NDWI</button>
+        <button class="btn small" id="btnWaterSelect" title="Выделить водные объекты по порогу NDWI">🎯 Вода</button>
+        <input type="range" id="ndwiThreshold" class="range short" min="-25" max="40" value="-25" step="1" title="Порог NDWI: −0,25 … 0,40">
+        <span class="field-label" id="ndwiValue">NDWI ≥ −0,25</span>
         <label class="field-label" for="mapLat">Широта</label>
         <input type="number" id="mapLat" class="num coord-num" value="59.93428" step="0.00001" min="-85" max="85" title="Широта центра карты, градусы">
         <label class="field-label" for="mapLon">Долгота</label>
@@ -267,7 +271,7 @@
             </div>
           </div>
           <div class="canvas-foot map-foot">
-            <span id="mapCredit">Карта: Esri · Рельеф: AWS Terrain Tiles</span>
+            <span id="mapCredit">Карта: Esri · ЦМР: Copernicus DEM GLO-30 / Planetary Computer</span>
             <span id="mapZoom">z11 · 114 м/пиксель</span>
           </div>
         </div>
@@ -279,7 +283,7 @@
 2. Кликните по руслу реки — появится красный маркер створа.
 3. «Построить водосбор» — синим показана предварительная область,
    оливковым — уточнённый водосбор, коричневым — речная сеть,
-   бордовым — главное русло (D8-гидрология по рельефу SRTM).
+   бордовым — главное русло (D8-гидрология по ЦМР Copernicus DEM GLO-30).
 4. «Рассчитать D» — канторовский метод по главному руслу.
 5. «Отчёт PDF» — сводный отчёт с картой и морфометрией.</pre>
           <div class="plot-box">
@@ -314,10 +318,25 @@
   </div>
 </div>
 
+<div class="modal" id="confirmModal" hidden>
+  <div class="modal-card confirm-card">
+    <h2 id="confirmTitle">Подтверждение</h2>
+    <div id="confirmText"></div>
+    <div class="confirm-actions">
+      <button class="btn accent" id="confirmYes">Да, продолжить</button>
+      <button class="btn" id="confirmNo">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<div class="screenshot-shield" id="screenshotShield" hidden>
+  <div>Снимок экрана заблокирован</div>
+</div>
+
 <div class="toast" id="toast" hidden></div>
 
 <script src="vendor/leaflet/leaflet.js?v=1"></script>
-<script src="client-core.js?v=9"></script>
-<script src="app.js?v=11"></script>
+<script src="client-core.js?v=11"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>

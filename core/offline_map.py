@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Демонстрационные подложки и рельеф для автономного окружения.
 
-Карта и SRTM-тайлы в обычной работе берутся из сети. Если сеть недоступна
-(например, сервер запущен в изолированном preview-окружении), web-версия
+Карта и тайлы ЦМР в обычной работе берутся из сети. Если сеть недоступна
+(например, сервер запущен в изолированном preview-окружении), сайт
 показывает детерминированную синтетическую местность с руслом и
 выполняет тот же конвейер D8/водосбор/Кантор на этом рельефе. Это позволяет
 проверить все функции сайта без интернета; при наличии сети используется
@@ -26,7 +26,7 @@ def ensure_mode():
     global _NETWORK_OK
     if _NETWORK_OK is None:
         try:
-            url = map_core.TERRAIN_URL.format(z=2, x=2, y=1)
+            url = 'https://planetarycomputer.microsoft.com/api/stac/v1/collections/cop-dem-glo-30'
             req = urllib.request.Request(url, headers=map_core.UA)
             with urllib.request.urlopen(req, timeout=3) as resp:
                 _NETWORK_OK = len(resp.read(64)) > 0
@@ -112,7 +112,7 @@ def synthetic_base_image(geo, source="esri"):
               + nz * math.sin(alt)) / norm)
     shade = np.clip(0.72 + 0.45 * shade, 0.35, 1.15)
 
-    if source == "topo":
+    if source == "sentinel":
         low = np.array([206, 214, 178], dtype=np.float32)
         mid = np.array([174, 190, 141], dtype=np.float32)
         high = np.array([214, 198, 166], dtype=np.float32)
@@ -138,7 +138,7 @@ def synthetic_base_image(geo, source="esri"):
     d.line(pts, fill=(63, 97, 116, 90), width=width + 5)
     d.line(pts, fill=(58, 116, 152, 220), width=width)
 
-    if source == "topo":
+    if source == "sentinel":
         draw = ImageDraw.Draw(img, "RGBA")
         step = max(45, int(np.ptp(z) / 14))
         base = math.ceil(float(z.min()) / step) * step
