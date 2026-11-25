@@ -1263,6 +1263,8 @@
     const tbl = (caption, head, rows, cls) => `<div class="tbl-cap">${escapeHtml(caption)}</div>
       <table class="${cls || ''}"><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead>
       <tbody>${rows.map((row) => '<tr>' + row.map((c) => `<td>${escapeHtml(c)}</td>`).join('') + '</tr>').join('')}</tbody></table>`;
+    const mapReport = (payload.source_name === 'карта и водосбор' ||
+      /карте/i.test(payload.title || ''));
     // Легенда и координатная метка для рисунка 2.
     const geo = payload.geo || {};
     const center = geo.center || {}, outlet = geo.outlet || {};
@@ -1276,19 +1278,19 @@
       geo.zoom ? `z${geo.zoom}${geo.m_per_px ? ' · ' + ru(geo.m_per_px, 1) + ' м/пиксель' : ''}`
         : fromParams('Масштаб карты', '')
     ].filter(Boolean) : [];
-    const legendItems = mapReport ? [
-      ['#4682C8', 'синий — предварительная область водосбора'],
-      ['#9CA75A', 'оливковый — уточнённый водосбор'],
-      ['#8B6431', 'коричневый — речная сеть'],
-      ['#733933', 'бордовый — главное русло'],
-      ['#FF3C3C', 'маркер «1» — створ']
-    ] : [
-      ['#28DC50', 'зелёный — выделенная маска воды'],
-      ['#FF3C3C', 'маркер «1» — створ'],
-      ['#F5CD46', 'жёлтый — дополнительные точки цвета']
+    const reportMarks = mapReport ? (payload.marks || []) : (payload.photo_marks || []);
+    const legendItems = [
+      { color: '#FF3C3C', label: 'маркер «1» — створ', kind: 'dot' },
+      ...reportMarks.map((m, i) => ({
+        color: m.color || '#5F0001',
+        label: `${mapReport ? i + 2 : 'M' + (i + 1)} — ${m.label || 'без подписи'}`,
+        kind: 'dot'
+      })),
+      { color: '#28DC50', label: 'линия маски реки', kind: 'line' }
     ];
-    const legendHtml = '<div class="fig-legend">' + legendItems.map(([color, label]) =>
-      `<span><i style="background:${color}"></i>${escapeHtml(label)}</span>`).join('') + '</div>';
+    const legendHtml = '<div class="fig-legend">' + legendItems.map((it) =>
+      `<span><i class="${it.kind}" style="background:${it.color}"></i>${escapeHtml(it.label)}</span>`
+    ).join('') + '</div>';
     const coordHtml = coordLines.length
       ? `<p class="note coord-note">${escapeHtml(coordLines.join(' · '))}</p>` : '';
     const stampImage = (src, lines) => {
@@ -1326,18 +1328,6 @@
       const win = window.open('', '_blank');
       if (!win) throw new Error('Разрешите всплывающие окна для сохранения отчёта.');
       const img = (src, cap) => src ? `<div class="figure"><img src="${src}" alt=""><div class="fig-cap">${cap}</div></div>` : '';
-      const mapReport = (payload.source_name === 'карта и водосбор' ||
-        /карте/i.test(payload.title || ''));
-      const mapLegend = mapReport
-        ? '<p class="note">Обозначения на карте: синий — предварительная область водосбора, ' +
-          'оливковый — уточнённый водосбор, коричневый — речная сеть, ' +
-          'бордовый — главное русло, красный маркер «1» — створ.</p>' : '';
-      const marks = mapReport ? (payload.marks || []) : [];
-      const marksHtml = marks.length
-        ? '<p class="note">Метки на карте:<br>' + marks.map((m, i) =>
-            `${i + 2}. ${escapeHtml(m.label || 'без подписи')} — ` +
-            `${Number(m.lat).toFixed(5)}° N, ${Number(m.lon).toFixed(5)}° E`).join('<br>') + '</p>'
-        : '';
       win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8">
         <title>Отчёт Гидрофрактал</title><style>
         @page { size: A4; margin: 2cm 1.5cm 2cm 3cm; @bottom-center { content: counter(page); font-family: "Times New Roman"; font-size: 12pt; } }
@@ -1365,6 +1355,8 @@
         .fig-legend span { white-space: nowrap; }
         .fig-legend i { display: inline-block; width: 10pt; height: 10pt; margin-right: 4pt;
           border: 1px solid #000; vertical-align: -1pt; }
+        .fig-legend i.dot { border-radius: 50%; }
+        .fig-legend i.line { width: 16pt; height: 2pt; border: 0; vertical-align: 3pt; }
         .coord-note { text-align: center; font-weight: bold; }
         .page { page-break-after: always; }
         .page:last-child { page-break-after: auto; }
@@ -1420,9 +1412,7 @@
             ? 'Рисунок 2 — Карта с водосбором, речной сетью и главным руслом'
             : 'Рисунок 2 — Снимок с выделенной маской воды (зелёный) и точкой расхода (створ, маркер «1»)')}
           ${legendHtml}
-          ${mapLegend}
           ${coordHtml}
-          ${marksHtml}
         </div>
         <div class="page">
           ${img(maskImg, 'Рисунок 3 — Маска реки (чёрный — вода, белый — фон)')}

@@ -190,25 +190,49 @@ def write_report(self, path):
     def fig_caption(text, markup=False):
         return Paragraph(text if markup else escape(text), caption_fig)
 
+    class LegendSwatch(Flowable):
+        """Круг метки, маркер створа или линия маски в легенде рисунка 2."""
+        def __init__(self, color, kind="dot"):
+            Flowable.__init__(self)
+            self.color, self.kind = color, kind
+            self.width, self.height = 16, 11
+
+        def draw(self):
+            c = self.canv
+            c.setFillColor(colors.HexColor(self.color))
+            c.setStrokeColor(colors.black)
+            c.setLineWidth(0.5)
+            if self.kind == "line":
+                c.rect(0, 4, 16, 2, stroke=0, fill=1)
+            elif self.kind == "dot":
+                c.circle(5.5, 5.5, 3.6, stroke=1, fill=1)
+            else:
+                c.rect(0, 2, 10, 7, stroke=1, fill=1)
+
     def fig_legend(items):
-        """Цветная легенда под рисунком 2 (без растровых файлов)."""
+        """Легенда рисунка 2: створ, подписанные метки, линия маски."""
         legend_style = ParagraphStyle(
             "fig_legend", parent=note, fontSize=9, leading=12,
-            firstLineIndent=0, alignment=TA_CENTER)
-        swatches, labels = [], []
-        col_w = 16.3 * cm / max(1, len(items))
-        for color, text in items:
-            sw = Table([[""]], colWidths=[0.32 * cm], rowHeights=[0.28 * cm])
-            sw.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(color)),
-                ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+            firstLineIndent=0, alignment=TA_LEFT)
+        cells = []
+        for item in items:
+            cell = Table([[
+                LegendSwatch(item["color"], item.get("kind", "dot")),
+                Paragraph(escape(item["label"]), legend_style)
+            ]], colWidths=[18, 5.1 * cm])
+            cell.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
             ]))
-            swatches.append(sw)
-            labels.append(Paragraph(escape(text), legend_style))
-        t = Table([swatches, labels], colWidths=[col_w] * len(items))
+            cells.append(cell)
+        per_row = 3
+        rows = [cells[i:i + per_row] for i in range(0, len(cells), per_row)]
+        t = Table(rows, colWidths=[16.3 * cm / per_row] * per_row)
         t.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("LEFTPADDING", (0, 0), (-1, -1), 2),
             ("RIGHTPADDING", (0, 0), (-1, -1), 2),
             ("TOPPADDING", (0, 0), (-1, -1), 1),
@@ -828,17 +852,18 @@ def write_report(self, path):
             coord_lines.append(f"z{geo['zoom']}{scale}")
         elif from_params("Масштаб карты"):
             coord_lines.append(from_params("Масштаб карты"))
-    legend_items = ([
-        ("#4682C8", "предварительная область водосбора"),
-        ("#9CA75A", "уточнённый водосбор"),
-        ("#8B6431", "речная сеть"),
-        ("#733933", "главное русло"),
-        ("#FF3C3C", "створ (маркер «1»)"),
-    ] if map_report else [
-        ("#28DC50", "выделенная маска воды"),
-        ("#FF3C3C", "створ (маркер «1»)"),
-        ("#F5CD46", "дополнительные точки цвета"),
-    ])
+    report_marks = (getattr(self, "marks", None) if map_report
+                    else getattr(self, "photo_marks", None)) or []
+    legend_items = [
+        {"color": "#FF3C3C", "label": "маркер «1» — створ", "kind": "dot"},
+        *[{
+            "color": m.get("color") or "#5F0001",
+            "label": f"{i + 2 if map_report else 'M' + str(i + 1)} — "
+                     f"{m.get('label') or 'без подписи'}",
+            "kind": "dot"
+        } for i, m in enumerate(report_marks)],
+        {"color": "#28DC50", "label": "линия маски реки", "kind": "line"},
+    ]
     story.append(KeepTogether([
         buf_image(scene, 15.0),
         fig_legend(legend_items),

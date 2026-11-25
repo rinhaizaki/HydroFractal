@@ -351,6 +351,7 @@ def make_report_pdf(payload: dict) -> bytes:
         _object_index={"skeleton": 0, "boundary": 1, "mask": 2}.get(obj, 0),
         _render_scene_image=_render_scene_image,
         geo=geo, map_report=map_report, params=payload.get("params") or [],
+        marks=payload.get("marks") or [], photo_marks=payload.get("photo_marks") or [],
         notify=lambda *args, **kwargs: None,
     )
     bio = io.BytesIO()
