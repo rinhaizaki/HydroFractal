@@ -232,16 +232,28 @@
           <option value="topo">OpenTopoMap (топо)</option>
         </select>
         <label class="check"><input type="checkbox" id="mapRelief"> Рельеф</label>
-        <button class="btn small" id="btnMapHome" title="Вернуться к центру">⌂</button>
+        <label class="field-label" for="mapLat">Широта</label>
+        <input type="number" id="mapLat" class="num coord-num" value="59.93428" step="0.00001" min="-85" max="85" title="Широта центра карты, градусы">
+        <label class="field-label" for="mapLon">Долгота</label>
+        <input type="number" id="mapLon" class="num coord-num" value="30.33510" step="0.00001" min="-180" max="180" title="Долгота центра карты, градусы">
+        <button class="btn small" id="btnMapSearch" title="Найти место по координатам (центр карты, без постановки створа)">🔎 Найти</button>
+        <button class="btn small" id="btnMapHome" title="Вернуться к центру — Санкт-Петербург">⌂</button>
+        <button class="btn small" id="btnMapZoomOut" title="Уменьшить масштаб карты">🔍−</button>
+        <button class="btn small" id="btnMapZoomIn" title="Увеличить масштаб карты">🔍+</button>
+        <button class="btn small" id="btnMapMinimap" title="Показать или скрыть мини-карту">🗺 Мини-карта</button>
         <button class="btn accent" id="btnMapCatch">🌊 Построить водосбор</button>
         <button class="btn accent" id="btnMapDim">📐 Рассчитать D</button>
         <button class="btn" id="btnMapPdf">💾 Отчёт PDF</button>
-        <span class="map-coords" id="mapCoords">41.70000° E, 43.50000° N</span>
+        <span class="map-coords" id="mapCoords">30.33510° E, 59.93428° N</span>
       </div>
       <div class="map-workspace">
         <div class="map-left">
           <div class="canvas-wrap map-canvas-wrap" id="mapWrap">
             <canvas id="mapCanvas"></canvas>
+            <div class="minimap" id="mapMinimapBox" hidden>
+              <div class="minimap-title">Мини-карта — кликните, чтобы перейти</div>
+              <canvas id="mapMinimapCanvas" width="190" height="130"></canvas>
+            </div>
             <div class="placeholder" id="mapPlaceholder">
               <span class="placeholder-icon">🗺</span>
               <strong>Карта и водосбор</strong>
@@ -295,7 +307,7 @@
 
 <div class="toast" id="toast" hidden></div>
 
-<script src="client-core.js?v=5"></script>
-<script src="app.js?v=7"></script>
+<script src="client-core.js?v=6"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>
