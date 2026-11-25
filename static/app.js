@@ -1,6 +1,6 @@
-/* HydroFractal Web — интерфейс приложения.
-   Все расчёты выполняет сервер (app.py + core/), браузер отвечает за холст,
-   инструменты и отображение результатов. */
+/* HydroFractal — интерфейс приложения.
+   На GitHub Pages расчёты выполняет static/client-core.js, локально — сервер
+   app.py + core/. Браузер отвечает за холст, инструменты и отображение. */
 (function () {
   'use strict';
 
@@ -24,6 +24,7 @@
     mapTableWrap: $('mapTableWrap'), mapTableDetails: $('mapTableDetails'),
     mapCredit: $('mapCredit'), mapZoom: $('mapZoom'), mapCoords: $('mapCoords'),
     mapLat: $('mapLat'), mapLon: $('mapLon'), mapMarkText: $('mapMarkText'),
+    ndwiThreshold: $('ndwiThreshold'),
     leafletWrap: $('leafletMap'),
     mapMinimapBox: $('mapMinimapBox'), mapMinimapCanvas: $('mapMinimapCanvas'),
     status: $('status'), statusRight: $('statusRight'),
@@ -46,15 +47,17 @@
     crop: { active: false, start: null, end: null },
     mapTabLoaded: false, activeTab: 'photo',
     map: {
-      lon: 30.33510, lat: 59.93428, zoom: 11, source: 'esri', relief: false,
+      lon: 30.33510, lat: 59.93428, zoom: 11, source: 'sentinel', relief: false,
+      sentinelItem: null, sentinelLoading: false, ndwiLayer: null, ndwiOn: false,
+      waterLayer: null, waterImageLayer: null, markLayer: null, waterObjects: [],
       img: null, geo: null, outlet: null, result: null, info: null,
-      credit: 'Карта: Esri · Рельеф: AWS Terrain Tiles', demo: false, cell: 0,
+      credit: 'Sentinel-2 L2A: Copernicus · ЦМР: AWS Terrain Tiles', demo: false, cell: 0,
       panDx: 0, panDy: 0, dragStart: null, moved: false, loading: false,
       tiles: [], reliefImg: null, overlayImg: null, reportImage: null, mask: null, width: 0, height: 0,
       minimapVisible: false, miniKey: '', miniResp: null,
       leaflet: null, tileLayer: null, layerIndex: 0, tileErrors: 0,
       marks: [], markMode: false,
-      leafletCredit: 'Снимок: Esri, Maxar, Earthstar Geographics',
+      leafletCredit: 'Sentinel-2 L2A: Copernicus / Planetary Computer',
       overlayGeo: null, reliefGeo: null, moveTimer: null
     }
   };
@@ -186,46 +189,64 @@
     apiMaskCtx.putImageData(out, 0, 0);
     return apiMaskCanvas.toDataURL('image/png');
   }
-  function pushUndo() {
-    if (!S.W) return;
-    S.undo.push({
+  function snapshot() {
+    return {
       data: maskCtx.getImageData(0, 0, S.W, S.H),
       seed: S.seed ? { ...S.seed } : null,
       points: S.colorPoints.map((p) => ({ ...p })),
-      nonEmpty: S.maskNonEmpty
-    });
+      nonEmpty: S.maskNonEmpty,
+      image: S.baseDataURL, W: S.W, H: S.H, sourceName: S.sourceName,
+      overlayDataURL: S.overlayDataURL, result: S.result,
+      waterPixels: S.waterPixels, waterShare: S.waterShare,
+      maskTouched: S.maskTouched
+    };
+  }
+  function pushUndo() {
+    if (!S.W) return;
+    S.undo.push(snapshot());
     if (S.undo.length > 24) S.undo.shift();
     S.redo.length = 0;
     updateHistoryButtons();
   }
-  function restoreSnapshot(snap) {
-    maskCtx.putImageData(snap.data, 0, 0);
+  async function restoreSnapshot(snap) {
+    const imageChanged = snap.image && (snap.image !== S.baseDataURL || snap.W !== S.W || snap.H !== S.H);
+    if (imageChanged) {
+      await showPhoto(snap.image, snap.sourceName || S.sourceName, { keepHistory: true });
+    }
+    if (snap.data && snap.data.width === S.W && snap.data.height === S.H) {
+      maskCtx.putImageData(snap.data, 0, 0);
+    }
     S.seed = snap.seed;
-    S.colorPoints = snap.points.map((p) => ({ ...p }));
+    S.colorPoints = (snap.points || []).map((p) => ({ ...p }));
     S.maskNonEmpty = !!snap.nonEmpty;
+    S.overlayDataURL = snap.overlayDataURL || null;
+    S.result = snap.result || null;
+    S.waterPixels = snap.waterPixels || 0;
+    S.waterShare = snap.waterShare || 0;
+    S.maskTouched = !!snap.maskTouched;
+    if (S.result) {
+      showResult(S.result);
+      setBadge('resultBadge', 'готово', 'ok');
+    } else {
+      el.report.textContent = INITIAL_REPORT;
+      el.plot.hidden = true; el.plotEmpty.hidden = false;
+      el.tableWrap.innerHTML = ''; el.streamWrap.innerHTML = '';
+      setBadge('resultBadge', 'ожидание');
+    }
+    resetView();
     updateHistoryButtons();
     renderPhoto();
   }
-  function undo() {
+  async function undo() {
     if (!S.undo.length) return;
-    S.redo.push({
-      data: maskCtx.getImageData(0, 0, S.W, S.H),
-      seed: S.seed ? { ...S.seed } : null,
-      points: S.colorPoints.map((p) => ({ ...p })),
-      nonEmpty: S.maskNonEmpty
-    });
-    restoreSnapshot(S.undo.pop());
+    S.redo.push(snapshot());
+    await restoreSnapshot(S.undo.pop());
     status('Отменено последнее действие.');
   }
-  function redo() {
+  async function redo() {
     if (!S.redo.length) return;
-    S.undo.push({
-      data: maskCtx.getImageData(0, 0, S.W, S.H),
-      seed: S.seed ? { ...S.seed } : null,
-      points: S.colorPoints.map((p) => ({ ...p })),
-      nonEmpty: S.maskNonEmpty
-    });
-    restoreSnapshot(S.redo.pop());
+    S.undo.push(snapshot());
+    await restoreSnapshot(S.redo.pop());
     status('Действие повторено.');
   }
   function updateHistoryButtons() {
@@ -432,7 +453,8 @@
     if (w < 10 || h < 10) { toast('Область слишком маленькая.'); renderPhoto(); return; }
     const base = cropCanvas(S.image, x, y, w, h, false);
     const mask = cropCanvas(maskCanvas, x, y, w, h, true);
-    await showPhoto(base, `${S.sourceName} (обрезано)`);
+    pushUndo();
+    await showPhoto(base, `${S.sourceName} (обрезано)`, { keepHistory: true });
     await setMaskFromDataURL(mask);
     const md = maskCtx.getImageData(0, 0, S.W, S.H).data;
     S.maskNonEmpty = false;
@@ -450,7 +472,7 @@
     S.waterPixels = 0; S.waterShare = 0;
     resetView();
     renderPhoto();
-    status(`Снимок обрезан до ${w} × ${h} px. Пересчитайте D заново.` +
+    status(`Снимок обрезан до ${w} × ${h} px. Отмена (Ctrl+Z) вернёт предыдущий снимок. Пересчитайте D заново.` +
       (S.seed ? '' : ' Створ был вне области — отметьте его снова.'));
     toast('Снимок обрезан');
   }
@@ -520,7 +542,8 @@
       });
     return c.toDataURL('image/png');
   }
-  async function showPhoto(dataURL, name) {
+  async function showPhoto(dataURL, name, opts) {
+    const keepHistory = !!(opts && opts.keepHistory);
     const img = await loadImage(dataURL);
     S.image = img; S.baseDataURL = dataURL;
     S.W = img.naturalWidth; S.H = img.naturalHeight;
@@ -530,7 +553,7 @@
     $('btnCrop').classList.remove('selected-accent');
     S.seed = null; S.colorPoints = []; S.result = null; S.waterPixels = 0; S.waterShare = 0;
     S.overlayDataURL = null; S.maskTouched = false;
-    S.undo.length = 0; S.redo.length = 0; updateHistoryButtons();
+    if (!keepHistory) { S.undo.length = 0; S.redo.length = 0; updateHistoryButtons(); }
     resetView();
     el.report.textContent = INITIAL_REPORT;
     el.plot.hidden = true; el.plotEmpty.hidden = false;
@@ -751,24 +774,39 @@
     const n = Math.pow(2, z);
     return { lon: x / n * 360 - 180, lat: Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180 / Math.PI };
   }
+  const SENTINEL_CREDIT = 'Sentinel-2 L2A: Copernicus / Planetary Computer';
+  const PC_TILES = 'https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/{z}/{x}/{y}@1x';
+  const PC_STAC = 'https://planetarycomputer.microsoft.com/api/stac/v1/search';
+  function sentinelTiles(item, kind) {
+    const q = new URLSearchParams();
+    q.set('collection', 'sentinel-2-l2a');
+    if (item) q.set('item', item);
+    if (kind === 'visual') {
+      q.set('assets', 'visual'); q.set('asset_bidx', 'visual|1,2,3'); q.set('nodata', '0');
+    } else if (kind === 'ndwi-color') {
+      q.set('expression', '(B03-B08)/(B03+B08)');
+      q.set('rescale', '-1,1'); q.set('colormap_name', 'blues');
+    } else {
+      q.set('expression', '(B03-B08)/(B03+B08)');
+      q.set('rescale', '-1,1');
+    }
+    q.set('format', 'png');
+    return PC_TILES + '?' + q.toString();
+  }
   const LEAFLET_SOURCES = {
+    sentinel: [
+      { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        credit: 'Sentinel-2: поиск сцены… (временно Esri)' },
+      { url: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        credit: 'Снимок: Google Satellite (резерв)' }
+    ],
     esri: [
       { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
         credit: 'Снимок: Esri, Maxar, Earthstar Geographics' },
       { url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
         credit: 'Снимок: Esri, Maxar, Earthstar Geographics' },
       { url: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
-        credit: 'Снимок: Google Satellite' },
-      { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-        credit: 'Карта: © OpenStreetMap (резерв)' }
-    ],
-    topo: [
-      { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-        credit: 'Карта: © OpenTopoMap (CC-BY-SA), данные © OpenStreetMap' },
-      { url: 'https://tile.opentopomap.org/{z}/{x}/{y}.png',
-        credit: 'Карта: © OpenTopoMap (CC-BY-SA), данные © OpenStreetMap' },
-      { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-        credit: 'Карта: © OpenStreetMap (резерв)' }
+        credit: 'Снимок: Google Satellite' }
     ]
   };
   function viewGeoPixels(lon, lat, z, w, h) {
@@ -780,7 +818,9 @@
     const list = LEAFLET_SOURCES[S.map.source] || LEAFLET_SOURCES.esri;
     S.map.layerIndex = clamp(index, 0, list.length - 1);
     S.map.tileErrors = 0;
-    const src = list[S.map.layerIndex];
+    const src = (S.map.source === 'sentinel' && S.map.sentinelItem)
+      ? { url: sentinelTiles(S.map.sentinelItem, 'visual'), credit: SENTINEL_CREDIT }
+      : list[S.map.layerIndex];
     if (S.map.tileLayer) S.map.leaflet.removeLayer(S.map.tileLayer);
     S.map.tileLayer = L.tileLayer(src.url, {
       maxZoom: 19, minZoom: 2, subdomains: 'abc',
@@ -798,6 +838,167 @@
     S.map.leafletCredit = src.credit;
     renderMap();
   }
+  // ------------------------------------------------ Sentinel-2 / NDWI (ГИС-слой)
+  function loadCorsImage(url, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      let done = false;
+      const timer = setTimeout(() => { if (!done) { done = true; reject(new Error('Таймаут тайла Sentinel.')); } }, timeoutMs || 15000);
+      img.crossOrigin = 'anonymous';
+      img.onload = () => { if (!done) { done = true; clearTimeout(timer); resolve(img); } };
+      img.onerror = () => { if (!done) { done = true; clearTimeout(timer); reject(new Error('Не удалось прочитать тайл NDWI.')); } };
+      img.src = url;
+    });
+  }
+  async function ensureSentinelItem(force) {
+    if (S.map.sentinelItem && !force) return S.map.sentinelItem;
+    if (S.map.sentinelLoading) return null;
+    S.map.sentinelLoading = true;
+    status('Ищем подходящую сцену Sentinel-2…');
+    try {
+      const d = 0.16;
+      const params = new URLSearchParams({
+        collections: 'sentinel-2-l2a',
+        bbox: `${(S.map.lon - d).toFixed(5)},${(S.map.lat - d).toFixed(5)},${(S.map.lon + d).toFixed(5)},${(S.map.lat + d).toFixed(5)}`,
+        datetime: '2024-01-01/2026-12-31',
+        limit: '1',
+        query: JSON.stringify({ 'eo:cloud_cover': { lt: 25 } })
+      });
+      const resp = await fetch(PC_STAC + '?' + params.toString());
+      if (!resp.ok) throw new Error('Каталог Sentinel недоступен.');
+      const data = await resp.json();
+      const item = data.features && data.features[0];
+      if (!item) throw new Error('Сцена Sentinel для этой точки не найдена.');
+      S.map.sentinelItem = item.id;
+      if (S.map.source === 'sentinel' && S.map.leaflet) setLeafletLayer(0);
+      status(`Sentinel-2: сцена ${item.id.slice(0, 34)}… загружена.`);
+      return item.id;
+    } catch (e) {
+      status('Sentinel-2 недоступен — включён резервный спутник. ' + e.message, true);
+      if (S.map.source === 'sentinel' && S.map.leaflet) setLeafletLayer(1);
+      return null;
+    } finally {
+      S.map.sentinelLoading = false;
+    }
+  }
+  function clearNdwiLayers() {
+    if (S.map.ndwiLayer && S.map.leaflet) S.map.leaflet.removeLayer(S.map.ndwiLayer);
+    if (S.map.waterLayer && S.map.leaflet) S.map.leaflet.removeLayer(S.map.waterLayer);
+    S.map.ndwiLayer = null;
+    S.map.waterLayer = null;
+    S.map.ndwiOn = false;
+    S.map.waterObjects = [];
+  }
+  async function toggleNdwiLayer() {
+    if (!S.map.leaflet || !window.L) { toast('NDWI доступен на карте Leaflet.'); return; }
+    if (S.map.ndwiOn) {
+      clearNdwiLayers();
+      $('btnNdwi').classList.remove('selected-accent');
+      status('Слой NDWI скрыт.');
+      return;
+    }
+    const item = await ensureSentinelItem();
+    if (!item) return;
+    if (S.map.ndwiLayer) S.map.leaflet.removeLayer(S.map.ndwiLayer);
+    S.map.ndwiLayer = L.tileLayer(sentinelTiles(item, 'ndwi-color'), {
+      maxZoom: 18, minZoom: 8, opacity: 0.78,
+      attribution: 'NDWI: Sentinel-2 L2A / Planetary Computer'
+    });
+    S.map.ndwiLayer.addTo(S.map.leaflet);
+    S.map.ndwiOn = true;
+    $('btnNdwi').classList.add('selected-accent');
+    status('NDWI включён: синий — вода (B03 зелёный, B08 ближний ИК).');
+  }
+  async function selectWaterObjects() {
+    if (!S.map.leaflet || !window.L) { toast('Выделение воды доступно на карте Leaflet.'); return; }
+    const item = await ensureSentinelItem();
+    if (!item) return;
+    busy(true, 'Выделяем водные объекты по NDWI…');
+    try {
+      const rect = el.mapCanvas.getBoundingClientRect();
+      const w = Math.max(240, Math.round(rect.width));
+      const h = Math.max(180, Math.round(rect.height));
+      const z = clamp(S.map.zoom, 8, 14);
+      const geo = viewGeoPixels(S.map.lon, S.map.lat, z, w, h);
+      const x0 = Math.floor(geo.x0), x1 = Math.floor(geo.x0 + w / 256);
+      const y0 = Math.floor(geo.y0), y1 = Math.floor(geo.y0 + h / 256);
+      const template = sentinelTiles(item, 'ndwi').replace('{z}', String(z));
+      const raster = document.createElement('canvas');
+      raster.width = w; raster.height = h;
+      const rctx = raster.getContext('2d', { willReadFrequently: true });
+      rctx.clearRect(0, 0, w, h);
+      let loaded = 0;
+      for (let ty = y0; ty <= y1; ty++) {
+        for (let tx = x0; tx <= x1; tx++) {
+          const url = template.replace('{x}', String(tx)).replace('{y}', String(ty));
+          try {
+            const img = await loadCorsImage(url);
+            rctx.drawImage(img, (tx - geo.x0) * 256, (ty - geo.y0) * 256, 256, 256);
+            loaded++;
+          } catch (e) { /* часть тайлов может отсутствовать — продолжаем */ }
+        }
+      }
+      if (!loaded) throw new Error('Ни один тайл NDWI не загрузился.');
+      const src = rctx.getImageData(0, 0, w, h);
+      const out = rctx.createImageData(w, h);
+      const water = new Uint8Array(w * h);
+      const threshold = Number(el.ndwiThreshold ? el.ndwiThreshold.value : 10) / 100;
+      for (let i = 0, p = 0; i < src.data.length; i += 4, p++) {
+        if (src.data[i + 3] < 100) continue;
+        const ndwi = src.data[i] / 255 * 2 - 1;
+        if (ndwi > threshold) {
+          water[p] = 1;
+          out.data[i] = 0; out.data[i + 1] = 205; out.data[i + 2] = 255; out.data[i + 3] = 150;
+        }
+      }
+      const labels = new Int32Array(w * h).fill(-1);
+      const objects = [];
+      for (let p = 0; p < water.length; p++) {
+        if (!water[p] || labels[p] >= 0) continue;
+        const id = objects.length;
+        const stack = [p];
+        labels[p] = id;
+        let count = 0, sx = 0, sy = 0;
+        while (stack.length) {
+          const q = stack.pop();
+          const x = q % w, y = Math.floor(q / w);
+          count++; sx += x; sy += y;
+          const nb = [x > 0 ? q - 1 : -1, x < w - 1 ? q + 1 : -1,
+            y > 0 ? q - w : -1, y < h - 1 ? q + w : -1];
+          for (const n of nb) {
+            if (n >= 0 && water[n] && labels[n] < 0) { labels[n] = id; stack.push(n); }
+          }
+        }
+        if (count >= 24) objects.push({ count, px: sx / count, py: sy / count });
+      }
+      if (S.map.waterLayer) S.map.leaflet.removeLayer(S.map.waterLayer);
+      S.map.waterLayer = L.layerGroup().addTo(S.map.leaflet);
+      const nw = lonLatFromTile(geo.x0, geo.y0, z);
+      const se = lonLatFromTile(geo.x0 + w / 256, geo.y0 + h / 256, z);
+      if (S.map.waterImageLayer) S.map.leaflet.removeLayer(S.map.waterImageLayer);
+      S.map.waterImageLayer = L.imageOverlay(raster.toDataURL('image/png'),
+        [[se.lat, nw.lon], [nw.lat, se.lon]], { opacity: 0.72, interactive: false });
+      S.map.waterImageLayer.addTo(S.map.leaflet);
+      const cell = S.map.cell || 10;
+      objects.forEach((o, i) => {
+        const ll = lonLatFromTile(geo.x0 + o.px / 256, geo.y0 + o.py / 256, z);
+        const area = o.count * cell * cell / 1e6;
+        const marker = L.circleMarker([ll.lat, ll.lon], {
+          radius: 5, color: '#ffffff', weight: 2,
+          fillColor: '#00A6D6', fillOpacity: 0.95
+        });
+        marker.bindPopup(`Водный объект ${i + 1}<br>Площадь ≈ ${fmt(area, 3)} км²<br>NDWI > ${fmt(threshold, 2)}`);
+        marker.addTo(S.map.waterLayer);
+      });
+      S.map.waterObjects = objects.map((o, i) => ({ index: i + 1, px: Math.round(o.count), area_km2: o.count * cell * cell / 1e6 }));
+      status(`Выделено водных объектов: ${objects.length}. Порог NDWI ${fmt(threshold, 2)}.`);
+      toast(`Водные объекты: ${objects.length}`);
+    } catch (e) {
+      status(e.message, true); toast(e.message);
+    } finally {
+      busy(false);
+    }
+  }
   function initLeaflet() {
     if (!window.L || !el.leafletWrap || S.map.leaflet) return;
     const map = L.map(el.leafletWrap, {
@@ -808,7 +1009,9 @@
     S.map.leaflet = map;
     el.mapWrap.classList.add('leaflet-mode');
     el.mapPlaceholder.hidden = true;
+    if (window.L && L.layerGroup) S.map.markLayer = L.layerGroup().addTo(map);
     setLeafletLayer(0);
+    if (S.map.source === 'sentinel') ensureSentinelItem();
     const sync = () => {
       const c = map.getCenter();
       S.map.lat = c.lat; S.map.lon = c.lng; S.map.zoom = map.getZoom();
@@ -862,9 +1065,21 @@
   }
   function addMapMark(lat, lon) {
     const raw = (el.mapMarkText && el.mapMarkText.value || '').trim();
-    const label = raw || `Метка ${S.map.marks.length + 1}`;
+    const n = S.map.marks.length;
+    const label = raw || `Метка ${n + 1}`;
     S.map.marks.push({ lat, lon, label });
     if (el.mapMarkText) el.mapMarkText.value = '';
+    if (S.map.leaflet && window.L && S.map.markLayer) {
+      const marker = L.circleMarker([lat, lon], {
+        radius: 10, color: '#ffffff', weight: 2,
+        fillColor: '#5F0001', fillOpacity: 1
+      });
+      marker.bindTooltip(`${n + 2}. ${label}`, {
+        permanent: true, direction: 'right', offset: [12, 0], className: 'hf-mark-tip'
+      });
+      marker.bindPopup(`<b>${n + 2}. ${escHtml(label)}</b><br>${fmt(lat, 5)}° N, ${fmt(lon, 5)}° E`);
+      marker.addTo(S.map.markLayer);
+    }
     renderMap();
     status(`Метка «${label}» поставлена: ${fmt(lat, 5)}° N, ${fmt(lon, 5)}° E.`);
   }
@@ -878,11 +1093,14 @@
   function clearMapMarks() {
     const n = S.map.marks.length;
     S.map.marks.length = 0;
+    if (S.map.markLayer && S.map.leaflet) {
+      S.map.markLayer.clearLayers();
+    }
     renderMap();
     status(n ? 'Все метки удалены.' : 'Меток пока нет.');
   }
   function drawMapMarks(ctx, geo, useLeaflet) {
-    if (!S.map.marks.length) return;
+    if (useLeaflet || !S.map.marks.length) return;
     S.map.marks.forEach((m, i) => {
       let px, py;
       if (useLeaflet && S.map.leaflet) {
@@ -936,7 +1154,7 @@
       }
       drawMapMarks(ctx, geo, true);
       el.mapCredit.textContent = S.map.leafletCredit +
-        ' · Рельеф: Mapzen / AWS Terrain Tiles' +
+        ' · ЦМР: Mapzen / AWS Terrain Tiles' +
         (S.map.demo ? ' · демо-рельеф (нет сети)' : '');
       el.mapZoom.textContent = `z${S.map.zoom} · ${fmt(S.map.cell, 1)} м/пиксель`;
       if (S.map.minimapVisible) renderMapMinimap();
@@ -1188,14 +1406,15 @@
         width: S.map.width || undefined, height: S.map.height || undefined,
         mask: S.map.mask,
         params: [
-          ['Источник карты', S.map.source === 'esri' ? 'Esri World Imagery' : 'OpenTopoMap'],
+          ['Источник карты', S.map.source === 'esri' ? 'Esri World Imagery' : 'Sentinel-2 L2A (Copernicus)'],
           ['Рельеф', S.map.relief ? 'отмывка включена' : 'не показывалась'],
           ['Центр карты', fmt(S.map.lat, 5) + '° N, ' + fmt(S.map.lon, 5) + '° E'],
           ['Масштаб карты', 'z' + S.map.zoom],
           ['Створ', fmt(m.outlet_lat, 5) + '° N, ' + fmt(m.outlet_lon, 5) + '° E'],
           ['Площадь водосбора', fmt(m.area_km2, 3) + ' км²'],
           ['Длина главного русла', fmt(m.channel_km, 3) + ' км'],
-          ['Разрешение рельефа', fmt(m.cell_m, 1) + ' м/ячейку']
+          ['Разрешение ЦМР', fmt(m.cell_m, 1) + ' м/ячейку'],
+          ['Водных объектов по NDWI', String((S.map.waterObjects || []).length)]
         ],
         result: r, table: r.table || [], stream: r.stream || {},
         plot: r.plot, image: S.map.reportImage || (S.map.img ? S.map.img.src : null),
@@ -1370,7 +1589,10 @@
     // Карта
     $('mapSource').addEventListener('change', (e) => {
       S.map.source = e.target.value;
-      if (S.map.leaflet) setLeafletLayer(0);
+      if (S.map.leaflet) {
+        setLeafletLayer(0);
+        if (S.map.source === 'sentinel') ensureSentinelItem();
+      }
       loadMapView(true);
     });
     $('mapRelief').addEventListener('change', (e) => {
@@ -1388,6 +1610,8 @@
     $('btnMapMinimap').addEventListener('click', toggleMapMinimap);
     $('btnMapMark').addEventListener('click', toggleMapMark);
     $('btnMapClearMarks').addEventListener('click', clearMapMarks);
+    $('btnNdwi').addEventListener('click', toggleNdwiLayer);
+    $('btnWaterSelect').addEventListener('click', selectWaterObjects);
     $('btnMapCatch').addEventListener('click', mapAnalyze);
     $('btnMapDim').addEventListener('click', mapAnalyze);
     $('btnMapPdf').addEventListener('click', mapSavePdf);
@@ -1577,7 +1801,8 @@
         <li><b>Важно.</b> Ластиком сотрите всё, что ниже створа. В расчёте должна остаться
           только область <b>выше</b> створа; иначе D будет неверным.</li>
         <li>Если снимок нужно обрезать, нажмите «✂ Обрезать снимок», выделите прямоугольник ЛКМ.
-          Изображение и маска обрежутся вместе; створ и доп. точки сдвинутся. D придётся пересчитать.</li>
+          Изображение и маска обрежутся вместе; створ и доп. точки сдвинутся. D придётся пересчитать.
+          Кнопка «↶ Назад» (Ctrl+Z) вернёт снимок до обрезки, «↷ Вперёд» — снова обрежет.</li>
         <li>Нажмите «📐 Рассчитать D». Появятся D = 1 + h/2, R², таблица n/ε/N, график log–log
           и оценка Qср, Cv, Cs.</li>
         <li>«💾 Сохранить маску (PNG)» — чёрная река на белом фоне с метаданными
@@ -1607,8 +1832,9 @@
       </ul>
       <h2>4. Карта и водосбор</h2>
       <ol>
-        <li>Откройте вкладку «🗺 Карта и водосбор». Подложка загружается через Leaflet:
-          Esri, при недоступности — Google Satellite и OpenStreetMap; для топо — OpenTopoMap.</li>
+        <li>Откройте вкладку «🗺 Карта и водосбор». Подложка — Sentinel-2 L2A
+          (Copernicus / Planetary Computer) через Leaflet; при недоступности — Esri
+          и Google Satellite. OpenTopoMap не используется.</li>
         <li>Панорамируйте карту мышью, масштабируйте колесом или кнопками 🔍+/🔍−.
           Кнопка «⌂» возвращает к Санкт-Петербургу.</li>
         <li>Поля «Широта» / «Долгота» и кнопка «🔎 Найти» <b>только центрируют карту</b>,
@@ -1618,6 +1844,9 @@
           Дополнительно показывается мини-карта и порядок реки Стралера.</li>
         <li>В режиме «📌 Метка» клики по подложке ставят пронумерованные заметки с подписью
           из поля «Подпись метки»; «🗑 Метки» удаляет их. Метки попадают в PDF-отчёт.</li>
+        <li>Кнопка «💧 NDWI» показывает индекс воды по каналам B03 (зелёный) и B08 (ИК)
+          снимка Sentinel-2. «🎯 Вода» выделяет водные объекты по порогу NDWI и подписывает
+          их площадь — это работает как слой ГИС поверх ЦМР.</li>
         <li>«📐 Рассчитать D» считает D по главному руслу. «💾 Отчёт PDF» формирует сводный отчёт.</li>
       </ol>
       <h2>5. Отчёт</h2>
@@ -1669,10 +1898,15 @@
       'tab-map': () => switchTab('map'),
       help: () => openModal('Как работать с Гидрофракталом', instructionHtml()),
       about: () => openModal('О программе', `
-        <p><b>Гидрофрактал</b> — веб-версия настольного приложения для оценки фрактальной размерности рек.</p>
-        <p>Сегментация воды в HSV, скелет/контур маски, канторовский метод (D = 1 + h/2), оценка Cv, Cs и кривой обеспеченности по Пирсону III типа — все алгоритмы перенесены из десктопного приложения без изменений.</p>
-        <p>Карта использует Esri World Imagery / OpenTopoMap и высоты SRTM (AWS Terrain Tiles).
-        Если сервер запущен без доступа к сети, показывается демо-местность.</p>`)
+        <p><b>Гидрофрактал</b> — программа для оценки фрактальной размерности рек
+        и характеристики стока по спутниковым снимкам и цифровой модели рельефа.</p>
+        <p><b>Разработана в 2026 году</b> студентками <b>Российского государственного
+        гидрометеорологического университета (РГГМУ)</b>:
+        Абдулкеримовой Мариной, Клишиной Надеждой, Мережкиной Екатериной.</p>
+        <p>Сегментация воды в HSV, скелет/контур маски, канторовский метод (D = 1 + h/2),
+        оценка Cv, Cs и кривой обеспеченности по Пирсону III типа сохранены из исходной
+        версии программы. Карта использует Sentinel-2 L2A (Copernicus) и ЦМР SRTM
+        (AWS Terrain Tiles), а также выделение водных объектов по NDWI.</p>`)
     };
     if (actions[act]) actions[act]();
   }
@@ -1875,7 +2109,8 @@ N(ε) на малых размерах ячеек и завышают D.
 (поле Scale), куда также записываются размер,
 разрешение 300 dpi, источник и дата.
 Если оставить пустым — будет «not set».`,
-    mapSource: 'Подложка карты через Leaflet: спутник Esri/Google или топокарта OpenTopoMap. Leaflet сам переключает резервные источники при ошибках тайлов.',
+    mapSource: 'Подложка Sentinel-2 L2A (Copernicus) через Leaflet; резерв — Esri / Google Satellite. OpenTopoMap отключён.',
+    ndwiThreshold: 'Порог NDWI от 0,00 до 0,40. Чем выше порог, тем меньше водных объектов выделяется.',
     mapRelief: 'Показать отмывку рельефа по AWS Terrain Tiles. Она же используется для расчёта водосбора и главного русла.',
     mapMarkText: 'Подпись для следующей метки на карте. Оставьте пустым — будет автоматическая нумерация.',
     mapLat: 'Широта центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.',

@@ -4,7 +4,7 @@
 
 Что делает
 ----------
-1. Качает и кэширует тайлы карты (Esri World Imagery, OpenTopoMap).
+1. Качает и кэширует тайлы карты (Sentinel-2 cloudless, Esri World Imagery).
 2. Качает тайлы рельефа (AWS Terrain Tiles, кодировка terrarium)
    и декодирует их в НАСТОЯЩИЕ высоты в метрах.
 3. Собирает мозаику под текущее окно карты.
@@ -43,12 +43,12 @@ SOURCES = {
         "credit": "Снимок: Esri, Maxar, Earthstar Geographics",
         "max_zoom": 18,
     },
-    "topo": {
-        "name": "OpenTopoMap (топо)",
-        "url": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-        "sub": ["a", "b", "c"],
-        "credit": "Карта: © OpenTopoMap (CC-BY-SA), данные © OpenStreetMap",
-        "max_zoom": 17,
+    "sentinel": {
+        "name": "Sentinel-2 cloudless (EOX)",
+        "url": ("https://tiles.maps.eox.at/wmts/1.0.0/"
+                "s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg"),
+        "credit": "Sentinel-2 cloudless: EOX IT Services / Copernicus",
+        "max_zoom": 14,
     },
 }
 
@@ -102,7 +102,7 @@ def _http_get(url, timeout=15):
 
 def fetch_tile(source, z, x, y, use_cache=True, force=False):
     """Возвращает bytes PNG или None при ошибке."""
-    key = "esri" if source == "esri" else "topo"
+    key = "esri" if source == "esri" else "sentinel"
     cpath = _cache_path(key, z, x, y) if use_cache else None
 
     if cpath and os.path.exists(cpath) and not force:

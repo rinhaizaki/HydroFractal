@@ -112,7 +112,7 @@ def synthetic_base_image(geo, source="esri"):
               + nz * math.sin(alt)) / norm)
     shade = np.clip(0.72 + 0.45 * shade, 0.35, 1.15)
 
-    if source == "topo":
+    if source == "sentinel":
         low = np.array([206, 214, 178], dtype=np.float32)
         mid = np.array([174, 190, 141], dtype=np.float32)
         high = np.array([214, 198, 166], dtype=np.float32)
@@ -138,7 +138,7 @@ def synthetic_base_image(geo, source="esri"):
     d.line(pts, fill=(63, 97, 116, 90), width=width + 5)
     d.line(pts, fill=(58, 116, 152, 220), width=width)
 
-    if source == "topo":
+    if source == "sentinel":
         draw = ImageDraw.Draw(img, "RGBA")
         step = max(45, int(np.ptp(z) / 14))
         base = math.ceil(float(z.min()) / step) * step

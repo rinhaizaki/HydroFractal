@@ -1,4 +1,4 @@
-# Архитектура HydroFractal Web
+# Архитектура HydroFractal
 
 Это техническая карта проекта: как устроен сайт, где выполняются расчёты, какие
 данные передаются между слоями и почему существуют два вычислительных движка.
@@ -64,7 +64,7 @@ flowchart TB
 
   subgraph Sources["ВНЕШНИЕ ДАННЫЕ"]
     File["JPG / PNG / TIFF<br/>8 и 16 бит"]
-    Tiles["Esri → Google → OSM<br/>OpenTopoMap"]
+    Tiles["Sentinel-2 L2A → Esri → Google<br/>(OpenTopoMap отключён)"]
     DEM["AWS Terrain Tiles<br/>Mapzen / SRTM"]
   end
 
@@ -286,8 +286,7 @@ D = 1 + h/2
 
 ### 7.4. Карта и рельеф
 
-- Тайлы: `Esri World Imagery` → `Google Satellite` → `OpenStreetMap`;
-  топо: `OpenTopoMap`.
+- Тайлы: `Sentinel-2 L2A` (Copernicus / Planetary Computer) → `Esri` → `Google Satellite`; OpenTopoMap отключён.
 - DEM: `elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png`.
 - При недоступности сети включается `core/offline_map.py` / `syntheticDem`.
 - Гео-привязка хранится в `geo {x0, y0, z, w, h}`; перевод пиксель ↔ lon/lat

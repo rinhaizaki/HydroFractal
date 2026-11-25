@@ -19,10 +19,10 @@
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       credit: 'Снимок: Esri, Maxar, Earthstar Geographics'
     },
-    topo: {
-      name: 'OpenTopoMap (топо)',
-      url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-      credit: 'Карта: © OpenTopoMap (CC-BY-SA), данные © OpenStreetMap'
+    sentinel: {
+      name: 'Sentinel-2 cloudless (EOX)',
+      url: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg',
+      credit: 'Sentinel-2 cloudless: EOX IT Services / Copernicus'
     }
   };
   const TERRAIN_URL = 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png';
@@ -36,10 +36,10 @@
       'Снимок: Google Satellite',
       'Карта: © OpenStreetMap (резерв)'
     ],
-    topo: [
-      'Карта: © OpenTopoMap (CC-BY-SA), данные © OpenStreetMap',
-      'Карта: © OpenTopoMap (CC-BY-SA), данные © OpenStreetMap',
-      'Карта: © OpenStreetMap (резерв)'
+    sentinel: [
+      'Sentinel-2 cloudless: EOX IT Services / Copernicus',
+      'Снимок: Esri, Maxar, Earthstar Geographics',
+      'Снимок: Google Satellite'
     ]
   };
 
@@ -714,19 +714,13 @@
     const jobs = skipTiles ? [] : coords.map(([x, y]) => {
       const template = SOURCES[source].url;
       const urls = [template];
-      if (source === 'esri') {
-        urls.push('https://services.arcgisonline.com/ArcGIS/rest/services/' +
-          'World_Imagery/MapServer/tile/{z}/{y}/{x}');
-        urls.push('https://server.arcgisonline.com/ArcGIS/rest/services/' +
-          'World_Imagery/MapServer/tile/{z}/{y}/{x}.jpg');
-        urls.push('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}');
-        urls.push('https://mt2.google.com/vt/lyrs=s&x={x}&y={y}&z={z}');
-        urls.push('https://tile.openstreetmap.org/{z}/{x}/{y}.png');
-      } else {
-        urls.push('https://a.tile.opentopomap.org/{z}/{x}/{y}.png');
-        urls.push('https://tile.opentopomap.org/{z}/{x}/{y}.png');
-        urls.push('https://tile.openstreetmap.org/{z}/{x}/{y}.png');
+      if (source === 'sentinel') {
+        urls.push('https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg');
       }
+      urls.push('https://services.arcgisonline.com/ArcGIS/rest/services/' +
+        'World_Imagery/MapServer/tile/{z}/{y}/{x}');
+      urls.push('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}');
+      urls.push('https://mt2.google.com/vt/lyrs=s&x={x}&y={y}&z={z}');
       const candidates = urls.map((u) => u
         .replace('{s}', sub[(x + y) % 3])
         .replace('{z}', z).replace('{x}', x).replace('{y}', y));
