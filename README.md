@@ -7,7 +7,7 @@
 Это **не сайт-презентация**, а рабочее приложение: все расчёты выполняются тем же
 вычислительным ядром, что и в оригинальном Python/Tkinter-коде.
 
-📐 [Архитектура проекта](ARCHITECTURE.md) · [схема в PNG](arhitektura_web.png) · [векторный SVG](arhitektura_web.svg)
+📐 [Архитектура проекта](ARCHITECTURE.md) · [схема в JPG](arhitektura_web.jpg) · [векторный SVG](arhitektura_web.svg)
 
 ## Структура интерфейса
 
