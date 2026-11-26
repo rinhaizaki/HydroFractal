@@ -167,9 +167,11 @@
     </div>
     </details>
     <div class="toolbar">
-      <label class="field-label" for="tiffSearchLat">Поиск координат в TIFF (Y / X):</label>
-      <input type="number" id="tiffSearchLat" class="num coord-num" value="59.93428" step="any" title="Координата Y: широта в градусах или northing в метрах — как в самом TIFF">
-      <input type="number" id="tiffSearchLon" class="num coord-num" value="30.33510" step="any" title="Координата X: долгота в градусах или easting в метрах — как в самом TIFF">
+      <label class="field-label" for="tiffSearchLat">Поиск по координатам в TIFF:</label>
+      <label class="field-label" for="tiffSearchLat">Широта</label>
+      <input type="number" id="tiffSearchLat" class="num coord-num" value="59.93428" step="any" title="Широта точки в GeoTIFF">
+      <label class="field-label" for="tiffSearchLon">Долгота</label>
+      <input type="number" id="tiffSearchLon" class="num coord-num" value="30.33510" step="any" title="Долгота точки в GeoTIFF">
       <button class="btn small" id="btnTiffSearch" title="Найти точку по координатам на загруженном GeoTIFF">🔎 Найти в TIFF</button>
       <span class="map-coords" id="tiffSearchStatus">GeoTIFF не загружен</span>
     </div>
@@ -403,6 +405,6 @@
 <script src="vendor/leaflet/leaflet.js?v=1"></script>
 <script src="vendor/geotiff.js?v=1"></script>
 <script src="client-core.js?v=22"></script>
-<script src="app.js?v=29"></script>
+<script src="app.js?v=30"></script>
 </body>
 </html>
