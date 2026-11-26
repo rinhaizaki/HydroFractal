@@ -11,7 +11,7 @@
       /[?&]static=1/.test(location.search);
   </script>
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css?v=1">
-  <link rel="stylesheet" href="styles.css?v=12">
+  <link rel="stylesheet" href="styles.css?v=13">
 </head>
 <body>
 <div class="app-shell">
@@ -276,6 +276,7 @@
         <button class="btn small" id="btnWaterSelect" title="Выделить водные объекты по порогу NDWI">🎯 Вода</button>
         <input type="range" id="ndwiThreshold" class="range short" min="-100" max="100" value="-25" step="1" title="Порог NDWI: −1,00 … +1,00">
         <span class="field-label" id="ndwiValue">NDWI ≥ −0,25</span>
+        <button class="btn small" id="btnEarthExplorer" title="Открыть USGS EarthExplorer — исходные данные NASADEM/SRTM. Требует собственного аккаунта USGS">🌐 EarthExplorer</button>
           </div>
         </details>
         </div>
@@ -286,6 +287,7 @@
         <label class="field-label" for="mapLon">Долгота</label>
         <input type="number" id="mapLon" class="num coord-num" value="30.33510" step="0.00001" min="-180" max="180" title="Долгота центра карты, градусы">
         <button class="btn small" id="btnMapSearch" title="Найти место по координатам (центр карты, без постановки створа)">🔎 Найти</button>
+        <button class="btn small selected-accent" id="btnMapOutlet" title="Режим выбора створа: кликните по реке на карте">🎯 Выбрать створ</button>
         <input type="text" id="mapMarkText" class="mark-label" placeholder="Подпись метки" size="14" title="Подпись для новой метки на карте">
         <input type="number" id="markLat" class="num coord-num" placeholder="Широта метки" step="0.00001" title="Широта новой метки, градусы">
         <input type="number" id="markLon" class="num coord-num" placeholder="Долгота метки" step="0.00001" title="Долгота новой метки, градусы">
@@ -331,6 +333,7 @@
           </div>
           <div class="canvas-foot map-foot">
             <span id="mapCredit">Карта: Esri · ЦМР: USGS EarthExplorer (NASADEM/SRTM), резерв — Copernicus DEM, Terrarium</span>
+            <a href="https://earthexplorer.usgs.gov/" target="_blank" rel="noopener noreferrer" title="Архив USGS EarthExplorer — источник NASADEM/SRTM">EarthExplorer ↗</a>
             <span id="mapZoom">z11 · 114 м/пиксель</span>
           </div>
           <div class="marks-panel" id="marksPanel">
@@ -343,7 +346,7 @@
           <pre class="report" id="mapReport">КАРТА И ВОДОСБОР
 
 1. Перетаскивайте карту ЛКМ, меняйте масштаб колесом мыши.
-2. Кликните по руслу реки — появится красный маркер створа.
+2. Режим «🎯 Выбрать створ» включён: кликните по руслу — появится красный маркер «1».
 3. «🌊 Водосбор → фото» — по ЦМР находится вся речная сеть и водосбор
    до створа; спутниковый снимок обрезается по водосбору и открывается
    во вкладке «Фотоснимок». Маска сети и створ переносятся туда автоматически,
@@ -352,8 +355,10 @@
    «📐 Рассчитать D» для пересчёта; оттуда же сохраняется PDF-отчёт.
 5. «📐 Рассчитать D» на карте — быстрый предварительный расчёт без перехода в фото.
 6. Поле «Вид» показывает снимок с водосбором, только снимок или только маску.
-7. Метки ставятся кликом или по координатам; список ниже позволяет их
-   переименовывать и удалять. Кнопка «Рисовать» добавляет линии поверх карты.</pre>
+7. Метки ставятся кнопкой «📌 Метка» или по координатам; кнопка «✏ Рисовать»
+   добавляет линии поверх карты. Повторное нажатие любой из них возвращает выбор створа.
+8. «🌐 EarthExplorer» открывает архив USGS — источник NASADEM/SRTM; координаты
+   центра копируются в буфер. Для скачивания исходных файлов нужен аккаунт USGS.</pre>
           <div class="plot-box">
             <div class="box-title">График log N(ε) — главное русло</div>
             <img id="mapPlotImg" alt="График для главного русла" hidden>
@@ -404,6 +409,6 @@
 
 <script src="vendor/leaflet/leaflet.js?v=1"></script>
 <script src="client-core.js?v=16"></script>
-<script src="app.js?v=20"></script>
+<script src="app.js?v=21"></script>
 </body>
 </html>

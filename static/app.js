@@ -54,6 +54,7 @@
       sentinelItem: null, sentinelLoading: false, demItem: null, demLoading: false,
       ndwiLayer: null, ndwiOn: false,
       waterLayer: null, waterImageLayer: null, markLayer: null, waterObjects: [],
+      tool: 'outlet',
       img: null, geo: null, outlet: null, result: null, info: null,
       credit: 'Sentinel-2 L2A: Copernicus / Planetary Computer · ЦМР: USGS EarthExplorer (NASADEM/SRTM), резерв — Copernicus DEM, Terrarium', demo: false, cell: 0,
       panDx: 0, panDy: 0, dragStart: null, moved: false, loading: false,
@@ -1231,7 +1232,7 @@
       S.map.outlet = { lon: e.latlng.lng, lat: e.latlng.lat };
       renderMap();
       status(`Створ установлен: ${fmt(e.latlng.lat, 5)}° N, ` +
-        `${fmt(e.latlng.lng, 5)}° E. Нажмите «Построить водосбор».`);
+        `${fmt(e.latlng.lng, 5)}° E. Нажмите «🌊 Водосбор → фото».`);
     });
     setTimeout(() => { map.invalidateSize(); sync(); }, 0);
   }
@@ -1364,12 +1365,18 @@
     rebuildMarkLayer(); renderMarksList(); renderMap();
     status(`Метка переименована: «${value}».`);
   }
-  function toggleMapMark() {
-    S.map.markMode = !S.map.markMode;
-    $('btnMapMark').classList.toggle('selected-accent', S.map.markMode);
-    status(S.map.markMode
-      ? 'Режим меток включён: кликайте по карте, чтобы отмечать места. Повторное нажатие вернёт установку створа.'
-      : 'Режим меток выключен. Клик по карте снова ставит створ.');
+  function setMapTool(tool) {
+    S.map.tool = tool;
+    S.map.markMode = tool === 'mark';
+    S.map.drawMode = tool === 'draw';
+    [['btnMapOutlet', 'outlet'], ['btnMapMark', 'mark'], ['btnMapDraw', 'draw']]
+      .forEach(([id, name]) => $(id).classList.toggle('selected-accent', tool === name));
+    const messages = {
+      outlet: 'Режим створа: кликните по реке на карте — появится маркер «1».',
+      mark: 'Режим меток: кликайте по карте, чтобы оставить подписи. Повторное нажатие вернёт выбор створа.',
+      draw: 'Режим рисования: ведите линию по карте ЛКМ. Повторное нажатие вернёт выбор створа.'
+    };
+    status(messages[tool] || messages.outlet);
   }
   function clearMapMarks() {
     const n = S.map.marks.length;
@@ -1416,13 +1423,7 @@
     }
     renderMap();
   }
-  function toggleMapDraw() {
-    S.map.drawMode = !S.map.drawMode;
-    $('btnMapDraw').classList.toggle('selected-accent', S.map.drawMode);
-    status(S.map.drawMode
-      ? 'Режим рисования включён: ведите линию по карте ЛКМ. Повторное нажатие — выход.'
-      : 'Режим рисования выключен.');
-  }
+  function toggleMapDraw() { setMapTool(S.map.tool === 'draw' ? 'outlet' : 'draw'); }
   function clearMapDrawings() {
     const n = S.map.drawings.length;
     S.map.drawings.length = 0;
@@ -2250,7 +2251,8 @@
     $('btnMapZoomIn').addEventListener('click', () => mapZoomBy(1));
     $('btnMapZoomOut').addEventListener('click', () => mapZoomBy(-1));
     $('btnMapMinimap').addEventListener('click', toggleMapMinimap);
-    $('btnMapMark').addEventListener('click', toggleMapMark);
+    $('btnMapMark').addEventListener('click', () => setMapTool(S.map.tool === 'mark' ? 'outlet' : 'mark'));
+    $('btnMapOutlet').addEventListener('click', () => setMapTool('outlet'));
     $('btnMapMarkCoord').addEventListener('click', addMapMarkByCoords);
     $('drawColor').addEventListener('input', (e) => {
       S.map.drawColor = e.target.value;
@@ -2287,6 +2289,17 @@
       if (m && e.target.value.trim()) {
         m.label = e.target.value.trim(); renderMarksList(); rebuildMarkLayer(); renderMap();
       }
+    });
+    $('btnEarthExplorer').addEventListener('click', () => {
+      const coords = `${S.map.lat.toFixed(5)}, ${S.map.lon.toFixed(5)}`;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(coords).catch(() => {});
+      }
+      const win = window.open('https://earthexplorer.usgs.gov/', '_blank', 'noopener,noreferrer');
+      if (win) { try { win.opener = null; } catch (e) { /* ignore */ } }
+      status(`Открыт USGS EarthExplorer. Координаты центра карты (${coords}) скопированы — ` +
+        'вставьте их в поиск сайта. Загрузка снимков/DEM требует вашей учётной записи USGS; ' +
+        'в приложении ЦМР NASADEM/SRTM уже берётся из этого архива через Planetary Computer.');
     });
     $('btnNdwi').addEventListener('click', toggleNdwiLayer);
     $('btnWaterSelect').addEventListener('click', selectWaterObjects);
@@ -2370,7 +2383,7 @@
         if (S.map.markMode) { addMapMark(g.lat, g.lon); return; }
         S.map.outlet = { lon: g.lon, lat: g.lat };
         renderMap();
-        status(`Створ установлен: ${fmt(g.lat, 5)}° N, ${fmt(g.lon, 5)}° E. Нажмите «Построить водосбор».`);
+        status(`Створ установлен: ${fmt(g.lat, 5)}° N, ${fmt(g.lon, 5)}° E. Нажмите «🌊 Водосбор → фото».`);
       }
     });
     el.mapCanvas.addEventListener('wheel', (e) => {
@@ -2464,7 +2477,7 @@
     'btnMapSearch': '🔎 Найти', 'btnMapHome': '⌂', 'btnMapZoomIn': '🔍+ (карта)',
     'btnMapZoomOut': '🔍− (карта)', 'btnMapMinimap': '🗺 Мини-карта',
     'btnMapMark': '📌 Метка', 'btnMapClearMarks': '🗑 Метки',
-    'btnMapCatch': '🌊 Построить водосбор', 'btnMapDim': '📐 Рассчитать D (карта)',
+    'btnMapCatch': '🌊 Водосбор → фото', 'btnMapDim': '📐 Рассчитать D (карта)',
     'btnMapPdf': '💾 Отчёт PDF (карта)', 'btnHelpPdf': '📄 Скачать инструкцию (PDF)',
     'modalClose': '✕', 'modalOk': 'Понятно',
     'method': 'Способ выделения', 'tol': 'Допуск по цвету', 'tolNum': 'Допуск (число)',
@@ -2545,10 +2558,10 @@
         <li>Панорамируйте карту мышью, масштабируйте колесом или кнопками 🔍+/🔍−.
           Кнопка «⌂» возвращает к Санкт-Петербургу.</li>
         <li>Поля «Широта» / «Долгота» и кнопка «🔎 Найти» <b>только центрируют карту</b>,
-          створ не ставят. Чтобы задать створ, кликните по руслу.</li>
-        <li>Кнопка «🌊 Построить водосбор» строит: синий — предварительная область,
-          оливковый — уточнённый водосбор, коричневый — речная сеть, бордовый — главное русло.
-          Дополнительно показывается мини-карта и порядок реки Стралера.</li>
+          створ не ставят. Режим «🎯 Выбрать створ» включён по умолчанию: клик по руслу
+          ставит красный маркер «1».</li>
+        <li>Кнопка «🌊 Водосбор → фото» строит по ЦМР полную речную сеть и водосбор,
+          обрезает снимок по водосбору и открывает его в «Фотоснимке» для расчёта D.</li>
         <li>В режиме «📌 Метка» клики по подложке ставят пронумерованные заметки с подписью
           из поля «Подпись метки»; «🗑 Метки» удаляет их. Метки попадают в PDF-отчёт.</li>
         <li>Кнопка «💧 NDWI» показывает индекс воды по каналам B03 (зелёный) и B08 (ИК)
@@ -2723,6 +2736,11 @@ D после обрезки нужно пересчитать заново.`,
     'photo': 'Вкладка анализа спутникового снимка.',
     'map': 'Вкладка карты и водосбора.',
     // Кнопки карты
+    'btnMapOutlet': `Режим выбора створа (включён по умолчанию): кликните по руслу реки,
+чтобы поставить красный маркер «1». Сюда же возвращают кнопки меток/рисования при повторном нажатии.`,
+    'btnEarthExplorer': `Открывает сайт USGS EarthExplorer — архив, из которого взяты NASADEM/SRTM.
+Координаты центра карты копируются в буфер. Для загрузки исходных файлов нужен
+собственный аккаунт USGS; приложение использует только открытые данные через Planetary Computer.`,
     'btnMapMark': `Режим заметок на карте: включите его и кликайте по подложке,
 чтобы поставить пронумерованные метки. Подпись берется из поля
 «Подпись метки». Повторное нажатие выключает режим — после этого
@@ -2848,6 +2866,7 @@ N(ε) на малых размерах ячеек и завышают D.
     btnMapMarkCoord: 'Поставить метку по введённым координатам и центрировать на ней карту.',
     btnMapDraw: 'Рисование на карте произвольным цветом — заметки для себя, не выделение реки.',
     btnMapDrawClear: 'Удалить все цветные заметки-линии с карты.',
+    btnEarthExplorer: 'Открыть USGS EarthExplorer (источник NASADEM/SRTM). Координаты центра копируются в буфер; для скачивания нужен аккаунт USGS.',
     drawColor: 'Цвет линий-заметок на карте.',
     btnMapCatch: 'По ЦМР: водосбор и речная сеть → обрезанный снимок → расчёты в режиме «Фотоснимок».',
     btnMapDim: 'Рассчитать фрактальную размерность главного русла по методу квадратов Кантора.',

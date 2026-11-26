@@ -212,6 +212,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 }
 .map-foot { align-items: flex-start; }
 .map-foot #mapCredit { flex: 1 1 auto; }
+.map-foot a { color: inherit; text-decoration: underline; white-space: nowrap; }
 
 /* ------------------------------ Панель результатов ----------------------- */
 .results {
