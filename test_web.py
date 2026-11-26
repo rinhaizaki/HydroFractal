@@ -89,6 +89,14 @@ def test_tiff_ndwi_upload():
     assert resp.json["mask"].startswith("data:image/png")
     assert 20 <= resp.json["seed"]["x"] <= 60
 
+    # Потоковая загрузка больших файлов: multipart вместо base64.
+    streamed = client.post("/api/tiff/ndwi/file", data={
+        "files": (io.BytesIO(bio.getvalue()), "water.tif"),
+        "green": "2", "nir": "3", "threshold": "-0.25"
+    }, content_type="multipart/form-data")
+    assert streamed.status_code == 200
+    assert streamed.json["water_pixels"] == 40 * 30
+
 
 def test_map_pipeline():
     client = web.app.test_client()

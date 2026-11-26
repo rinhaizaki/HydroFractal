@@ -146,6 +146,20 @@
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
+  async function postForm(path, form) {
+    let res;
+    try {
+      res = await fetch(path, {method: 'POST', body: form});
+    } catch (e) {
+      throw new Error('Нет связи с сервером. Проверьте, что запущен app.py.');
+    }
+    let data;
+    try { data = await res.json(); } catch (e) { data = {}; }
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `Ошибка сервера (${res.status}).`);
+    }
+    return data;
+  }
   function busy(isBusy, message) {
     document.body.style.cursor = isBusy ? 'progress' : '';
     if (message) status(message);
@@ -742,21 +756,23 @@
     const files = Array.from(el.tiffFile.files || []);
     if (!files.length) { toast('Выберите TIFF-файл.'); return; }
     if (files.length > 2) { toast('Нужно один многоканальный TIFF или два файла: зелёный и NIR.'); return; }
-    busy(true, 'Читаем TIFF и считаем NDWI…');
+    busy(true, 'Читаем TIFF потоком и считаем NDWI…');
     try {
-      const payload = {files: [], green: Number(el.tiffGreen.value) || 1,
+      const extra = {green: Number(el.tiffGreen.value) || 1,
         nir: Number(el.tiffNir.value) || 2,
         threshold: Number(el.tiffNdwiThreshold.value) / 100};
-      for (const file of files) {
-        const data = await new Promise((resolve, reject) => {
-          const rd = new FileReader();
-          rd.onload = () => resolve(String(rd.result));
-          rd.onerror = () => reject(new Error('Не удалось прочитать ' + file.name));
-          rd.readAsDataURL(file);
+      let resp;
+      if (STATIC_MODE) {
+        // Большие TIFF не кодируем в base64: client-core читает File по частям.
+        resp = await api('/api/tiff/ndwi', {
+          ...extra, files: files.map((f) => ({name: f.name, file: f}))
         });
-        payload.files.push({name: file.name, data});
+      } else {
+        const form = new FormData();
+        files.forEach((f) => form.append('files', f, f.name));
+        Object.keys(extra).forEach((k) => form.append(k, String(extra[k])));
+        resp = await postForm('/api/tiff/ndwi/file', form);
       }
-      const resp = await api('/api/tiff/ndwi', payload);
       await showPhoto(resp.photo, 'TIFF → NDWI');
       await setMaskFromDataURL(resp.mask);
       S.seed = resp.seed || null;
@@ -774,7 +790,8 @@
       setBadge('resultBadge', 'готово', 'ok');
       status(`NDWI ≥ ${(resp.threshold).toFixed(2).replace('.', ',')}: вода ` +
         `${fmt(resp.water_pixels, 0)} px из ${fmt(resp.width, 0)}×${fmt(resp.height, 0)}. ` +
-        `D по выделенной воде = ${fmt(S.result.D, 4)}.`);
+        `D по выделенной воде = ${fmt(S.result.D, 4)}.` +
+        (resp.downsampled ? ' Большой TIFF прочитан по уменьшенной сетке.' : ''));
       toast('Вода по NDWI выделена');
     } catch (e) {
       status(e.message, true); toast(e.message);

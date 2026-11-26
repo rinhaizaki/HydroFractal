@@ -471,6 +471,68 @@ def health():
 # ---------------------------------------------------------------------------
 # Режим «Снимок»
 # ---------------------------------------------------------------------------
+NDWI_MAX_PIXELS = 4_000_000
+
+
+def _ndwi_response(arrays, data):
+    """Общий расчёт NDWI и подготовка снимка/маски для одного или двух TIFF."""
+    import tifffile  # noqa: F401  (используется вызывающими функциями)
+    if not arrays:
+        raise ValueError("Выберите TIFF-файл.")
+    first = np.atleast_3d(arrays[0])
+    H, W = first.shape[:2]
+    n_bands = first.shape[2] if len(arrays) == 1 else 2
+    if len(arrays) == 2 and np.atleast_3d(arrays[1]).shape[:2] != (H, W):
+        raise ValueError("Размеры TIFF-файлов не совпадают.")
+
+    def band(idx):
+        if idx < 1 or idx > n_bands:
+            raise ValueError("В TIFF нет выбранного канала. Проверьте номера каналов.")
+        if len(arrays) == 1:
+            return first[:, :, idx - 1]
+        return np.atleast_3d(arrays[idx - 1])[:, :, 0]
+
+    green_idx = int(data.get("green", 1)) if len(arrays) == 1 else 1
+    nir_idx = int(data.get("nir", 2)) if len(arrays) == 1 else 2
+    threshold = float(data.get("threshold", -0.25))
+    step = max(1, math.ceil(math.sqrt(H * W / NDWI_MAX_PIXELS)))
+    green = np.asarray(band(green_idx)[::step, ::step], dtype=np.float32)
+    nir = np.asarray(band(nir_idx)[::step, ::step], dtype=np.float32)
+    denom = green + nir
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ndwi = np.where(denom > 0, (green - nir) / denom, np.nan)
+    water = np.isfinite(ndwi) & (ndwi >= threshold)
+    count = int(water.sum())
+    if not count:
+        raise ValueError("Вода по NDWI не найдена — проверьте каналы и порог.")
+
+    def to_u8(b):
+        finite = np.isfinite(b)
+        if not finite.any():
+            return np.zeros(b.shape, np.uint8)
+        lo, hi = float(b[finite].min()), float(b[finite].max())
+        if hi <= lo:
+            return np.full(b.shape, 128, np.uint8)
+        scaled = (b - lo) * 255.0 / (hi - lo)
+        return np.clip(np.nan_to_num(scaled, nan=0), 0, 255).astype(np.uint8)
+
+    rgb_bands = []
+    for i in range(3):
+        src = band(min(i + 1, n_bands))[::step, ::step]
+        rgb_bands.append(to_u8(np.asarray(src, dtype=np.float32)))
+    rgb = np.stack(rgb_bands, axis=2)
+    ys, xs = np.nonzero(water)
+    return jsonify({
+        "ok": True,
+        "photo": _encode_png(Image.fromarray(rgb, "RGB")),
+        "mask": _encode_png(Image.fromarray((water.astype(np.uint8) * 255), "L")),
+        "width": int(green.shape[1]), "height": int(green.shape[0]),
+        "water_pixels": count, "threshold": threshold,
+        "seed": {"x": int(xs.mean()), "y": int(ys.mean())},
+        "downsampled": step > 1
+    })
+
+
 @app.post("/api/tiff/ndwi")
 def api_tiff_ndwi():
     """TIFF с каналами зелёного и NIR → снимок и маска воды по NDWI."""
@@ -484,55 +546,49 @@ def api_tiff_ndwi():
         for item in files:
             raw = _decode_data_url(item.get("data", ""))
             with tifffile.TiffFile(io.BytesIO(raw)) as tf:
-                arr = np.asarray(tf.pages[0].asarray())
-            arrays.append(np.atleast_3d(arr).astype(np.float32))
-        if len(arrays) == 1:
-            raster = arrays[0]
-            green_idx = int(data.get("green", 1))
-            nir_idx = int(data.get("nir", 2))
-        else:
-            if arrays[0].shape[:2] != arrays[1].shape[:2]:
-                raise ValueError("Размеры TIFF-файлов не совпадают.")
-            raster = np.stack([arrays[0][:, :, 0], arrays[1][:, :, 0]], axis=2)
-            green_idx, nir_idx = 1, 2
-        if green_idx < 1 or green_idx > raster.shape[2] or nir_idx < 1 or nir_idx > raster.shape[2]:
-            raise ValueError("В TIFF нет выбранного канала. Проверьте номера каналов.")
-        threshold = float(data.get("threshold", -0.25))
-        green = raster[:, :, green_idx - 1]
-        nir = raster[:, :, nir_idx - 1]
-        denom = green + nir
-        with np.errstate(divide="ignore", invalid="ignore"):
-            ndwi = np.where(denom > 0, (green - nir) / denom, np.nan)
-        water = np.isfinite(ndwi) & (ndwi >= threshold)
-        count = int(water.sum())
-        if not count:
-            raise ValueError("Вода по NDWI не найдена — проверьте каналы и порог.")
-
-        def to_u8(band):
-            finite = np.isfinite(band)
-            if not finite.any():
-                return np.zeros(band.shape, np.uint8)
-            lo, hi = float(band[finite].min()), float(band[finite].max())
-            if hi <= lo:
-                return np.full(band.shape, 128, np.uint8)
-            scaled = (band - lo) * 255.0 / (hi - lo)
-            return np.clip(np.nan_to_num(scaled, nan=0), 0, 255).astype(np.uint8)
-
-        rgb = np.stack([to_u8(raster[:, :, min(i, raster.shape[2] - 1)])
-                        for i in range(3)], axis=2)
-        ys, xs = np.nonzero(water)
-        return jsonify({
-            "ok": True,
-            "photo": _encode_png(Image.fromarray(rgb, "RGB")),
-            "mask": _encode_png(Image.fromarray((water.astype(np.uint8) * 255), "L")),
-            "width": int(raster.shape[1]), "height": int(raster.shape[0]),
-            "water_pixels": count, "threshold": threshold,
-            "seed": {"x": int(xs.mean()), "y": int(ys.mean())}
-        })
+                arrays.append(np.asarray(tf.pages[0].asarray()))
+        return _ndwi_response(arrays, data)
     except ImportError:
         return jsonify({"ok": False, "error": "Для TIFF нужен tifffile (pip install tifffile)."}), 400
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc) or exc.__class__.__name__}), 400
+
+
+@app.post("/api/tiff/ndwi/file")
+def api_tiff_ndwi_file():
+    """Загрузка TIFF потоком: большие файлы не попадают целиком в память."""
+    import tempfile
+    import tifffile
+    paths = []
+    try:
+        for storage in (request.files.getlist("files") or [])[:2]:
+            tmp = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
+            paths.append(tmp.name)
+            with tmp:
+                while True:
+                    chunk = storage.stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    tmp.write(chunk)
+        if not paths:
+            raise ValueError("Выберите TIFF-файл.")
+        arrays = [tifffile.memmap(path, mode="r") for path in paths]
+        data = {
+            "green": request.form.get("green", 1),
+            "nir": request.form.get("nir", 2),
+            "threshold": request.form.get("threshold", -0.25)
+        }
+        return _ndwi_response(arrays, data)
+    except ImportError:
+        return jsonify({"ok": False, "error": "Для TIFF нужен tifffile (pip install tifffile)."}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc) or exc.__class__.__name__}), 400
+    finally:
+        for path in paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 @app.post("/api/upload")
