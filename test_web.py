@@ -4,6 +4,7 @@ import base64
 import io
 
 import numpy as np
+import pytest
 from PIL import Image, ImageDraw
 
 import app as web
@@ -63,6 +64,30 @@ def test_photo_pipeline():
     })
     assert report.status_code == 200
     assert report.data[:4] == b"%PDF"
+
+
+def test_tiff_ndwi_upload():
+    tifffile = pytest.importorskip("tifffile")
+    client = web.app.test_client()
+    green = np.full((60, 80), 60, np.uint8)
+    nir = np.full((60, 80), 120, np.uint8)
+    green[15:45, 20:60] = 180
+    nir[15:45, 20:60] = 40
+    rgb = np.stack([green // 2, green, nir], axis=2)
+    bio = io.BytesIO()
+    tifffile.imwrite(bio, rgb)
+    data = "data:image/tiff;base64," + base64.b64encode(bio.getvalue()).decode("ascii")
+
+    resp = client.post("/api/tiff/ndwi", json={
+        "files": [{"name": "water.tif", "data": data}],
+        "green": 2, "nir": 3, "threshold": -0.25})
+    assert resp.status_code == 200
+    assert resp.json["ok"] is True
+    assert resp.json["water_pixels"] == 40 * 30
+    assert (resp.json["width"], resp.json["height"]) == (80, 60)
+    assert resp.json["photo"].startswith("data:image/png")
+    assert resp.json["mask"].startswith("data:image/png")
+    assert 20 <= resp.json["seed"]["x"] <= 60
 
 
 def test_map_pipeline():

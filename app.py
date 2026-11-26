@@ -471,6 +471,70 @@ def health():
 # ---------------------------------------------------------------------------
 # Режим «Снимок»
 # ---------------------------------------------------------------------------
+@app.post("/api/tiff/ndwi")
+def api_tiff_ndwi():
+    """TIFF с каналами зелёного и NIR → снимок и маска воды по NDWI."""
+    try:
+        import tifffile
+        data = request.get_json(force=True) or {}
+        files = (data.get("files") or [])[:2]
+        if not files:
+            raise ValueError("Выберите TIFF-файл.")
+        arrays = []
+        for item in files:
+            raw = _decode_data_url(item.get("data", ""))
+            with tifffile.TiffFile(io.BytesIO(raw)) as tf:
+                arr = np.asarray(tf.pages[0].asarray())
+            arrays.append(np.atleast_3d(arr).astype(np.float32))
+        if len(arrays) == 1:
+            raster = arrays[0]
+            green_idx = int(data.get("green", 1))
+            nir_idx = int(data.get("nir", 2))
+        else:
+            if arrays[0].shape[:2] != arrays[1].shape[:2]:
+                raise ValueError("Размеры TIFF-файлов не совпадают.")
+            raster = np.stack([arrays[0][:, :, 0], arrays[1][:, :, 0]], axis=2)
+            green_idx, nir_idx = 1, 2
+        if green_idx < 1 or green_idx > raster.shape[2] or nir_idx < 1 or nir_idx > raster.shape[2]:
+            raise ValueError("В TIFF нет выбранного канала. Проверьте номера каналов.")
+        threshold = float(data.get("threshold", -0.25))
+        green = raster[:, :, green_idx - 1]
+        nir = raster[:, :, nir_idx - 1]
+        denom = green + nir
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ndwi = np.where(denom > 0, (green - nir) / denom, np.nan)
+        water = np.isfinite(ndwi) & (ndwi >= threshold)
+        count = int(water.sum())
+        if not count:
+            raise ValueError("Вода по NDWI не найдена — проверьте каналы и порог.")
+
+        def to_u8(band):
+            finite = np.isfinite(band)
+            if not finite.any():
+                return np.zeros(band.shape, np.uint8)
+            lo, hi = float(band[finite].min()), float(band[finite].max())
+            if hi <= lo:
+                return np.full(band.shape, 128, np.uint8)
+            scaled = (band - lo) * 255.0 / (hi - lo)
+            return np.clip(np.nan_to_num(scaled, nan=0), 0, 255).astype(np.uint8)
+
+        rgb = np.stack([to_u8(raster[:, :, min(i, raster.shape[2] - 1)])
+                        for i in range(3)], axis=2)
+        ys, xs = np.nonzero(water)
+        return jsonify({
+            "ok": True,
+            "photo": _encode_png(Image.fromarray(rgb, "RGB")),
+            "mask": _encode_png(Image.fromarray((water.astype(np.uint8) * 255), "L")),
+            "width": int(raster.shape[1]), "height": int(raster.shape[0]),
+            "water_pixels": count, "threshold": threshold,
+            "seed": {"x": int(xs.mean()), "y": int(ys.mean())}
+        })
+    except ImportError:
+        return jsonify({"ok": False, "error": "Для TIFF нужен tifffile (pip install tifffile)."}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc) or exc.__class__.__name__}), 400
+
+
 @app.post("/api/upload")
 def api_upload():
     """Нормализует загруженный снимок и возвращает его для холста."""

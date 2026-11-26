@@ -62,7 +62,7 @@
         <button class="menu-trigger" data-menu="tabs">Переход</button>
         <div class="menu-dropdown" id="menu-tabs">
           <button data-act="tab-photo">📷 Фотоснимок</button>
-          <button data-act="tab-map">🗺 Карта и водосбор</button>
+          <button data-act="tab-map">🗺 Карта</button>
         </div>
       </div>
       <div class="menu-group">
@@ -83,7 +83,7 @@
   <main class="main">
     <div class="tabs" role="tablist">
       <button class="tab active" data-tab="photo" role="tab" aria-selected="true">📷 Фотоснимок</button>
-      <button class="tab" data-tab="map" role="tab" aria-selected="false">🗺 Карта и водосбор</button>
+      <button class="tab" data-tab="map" role="tab" aria-selected="false">🗺 Карта</button>
     </div>
 
     <!-- ---------- вкладка «Фотоснимок» ---------- -->
@@ -94,6 +94,7 @@
         <button class="ribbon-tab active" data-ribbon-tab="photo-basic" role="tab" aria-selected="true">Снимок и выделение</button>
         <button class="ribbon-tab" data-ribbon-tab="photo-tools" role="tab" aria-selected="false">Инструменты и правка маски</button>
         <button class="ribbon-tab" data-ribbon-tab="photo-view" role="tab" aria-selected="false">Ориентация, обрезка, сетка и масштаб</button>
+        <button class="ribbon-tab" data-ribbon-tab="photo-ndwi" role="tab" aria-selected="false">TIFF и NDWI</button>
     </div>
     <div class="ribbon-panels">
         <div class="ribbon-panel active" data-ribbon-panel="photo-basic" role="tabpanel">
@@ -247,72 +248,43 @@
           </details>
         </aside>
       </div>
+        <div class="ribbon-panel" data-ribbon-panel="photo-ndwi" role="tabpanel">
+          <div class="toolbar">
+      <label class="field-label" for="tiffFile">TIFF с водой:</label>
+      <input type="file" id="tiffFile" accept=".tif,.tiff,image/tiff" multiple title="Один многоканальный TIFF или два файла — зелёный и NIR">
+      <label class="field-label" for="tiffGreen">Зелёный канал</label>
+      <input type="number" id="tiffGreen" class="num" value="1" min="1" step="1" title="Номер зелёного канала в TIFF, начиная с 1">
+      <label class="field-label" for="tiffNir">NIR-канал</label>
+      <input type="number" id="tiffNir" class="num" value="2" min="1" step="1" title="Номер ближнего инфракрасного канала в TIFF, начиная с 1">
+      <button class="btn accent" id="btnTiffNdwi">💧 Выделить воду по NDWI</button>
+      <input type="range" id="tiffNdwiThreshold" class="range short" min="-100" max="100" value="-25" step="1" title="NDWI: от −1 до +1, по умолчанию ≥ −0,25">
+      <span class="field-label" id="tiffNdwiValue">NDWI ≥ −0,25</span>
+          </div>
+        </div>
     </section>
 
-    <!-- ---------- вкладка «Карта и водосбор» ---------- -->
+    <!-- ---------- вкладка «Карта»: только просмотр ---------- -->
     <section class="panel" id="panel-map" role="tabpanel">
       <div class="toolbars ribbon">
         <div class="ribbon-tabs" role="tablist">
-        <button class="ribbon-tab active" data-ribbon-tab="map-layers" role="tab" aria-selected="true">Подложка, вид и слои</button>
-        <button class="ribbon-tab" data-ribbon-tab="map-marks" role="tab" aria-selected="false">Координаты, метки и рисунки</button>
-        <button class="ribbon-tab" data-ribbon-tab="map-actions" role="tab" aria-selected="false">Навигация, расчёт и отчёт</button>
+          <button class="ribbon-tab active" data-ribbon-tab="map-layers" role="tab" aria-selected="true">Подложка и вид</button>
         </div>
         <div class="ribbon-panels">
-        <div class="ribbon-panel active" data-ribbon-panel="map-layers" role="tabpanel">
-          <div class="toolbar">
-        <label class="field-label" for="mapSource">Слой:</label>
-        <select id="mapSource" class="select">
-          <option value="sentinel">Sentinel-2 (Copernicus)</option>
-          <option value="esri">Esri (резервный спутник)</option>
-        </select>
-        <label class="check"><input type="checkbox" id="mapRelief"> ЦМР / рельеф</label>
-        <label class="field-label" for="mapViewMode">Вид:</label>
-        <select id="mapViewMode" class="select">
-          <option value="overlay">Снимок + водосбор</option>
-          <option value="image">Только снимок</option>
-          <option value="mask">Только маска</option>
-        </select>
-        <button class="btn small" id="btnNdwi" title="Показать или скрыть слой NDWI по Sentinel-2">💧 NDWI</button>
-        <button class="btn small" id="btnWaterSelect" title="Выделить водные объекты по порогу NDWI">🎯 Вода</button>
-        <input type="range" id="ndwiThreshold" class="range short" min="-100" max="100" value="-25" step="1" title="Порог NDWI: −1,00 … +1,00">
-        <span class="field-label" id="ndwiValue">NDWI ≥ −0,25</span>
-        <button class="btn small" id="btnEarthExplorer" title="Открыть USGS EarthExplorer — исходные данные NASADEM/SRTM. Требует собственного аккаунта USGS">🌐 EarthExplorer</button>
+          <div class="ribbon-panel active" data-ribbon-panel="map-layers" role="tabpanel">
+            <div class="toolbar">
+              <label class="field-label" for="mapSource">Слой:</label>
+              <select id="mapSource" class="select">
+                <option value="sentinel">Sentinel-2 (Copernicus)</option>
+                <option value="esri">Esri (спутник)</option>
+              </select>
+              <label class="check"><input type="checkbox" id="mapRelief"> Рельеф</label>
+              <button class="btn small" id="btnMapHome" title="Вернуться к центру">⌂</button>
+              <button class="btn small" id="btnMapZoomOut" title="Уменьшить масштаб">🔍−</button>
+              <button class="btn small" id="btnMapZoomIn" title="Увеличить масштаб">🔍+</button>
+              <button class="btn small" id="btnMapMinimap" title="Мини-карта">🗺 Мини-карта</button>
+              <span class="map-coords" id="mapCoords">30.33510° E, 59.93428° N</span>
+            </div>
           </div>
-        </details>
-        </div>
-        <div class="ribbon-panel" data-ribbon-panel="map-marks" role="tabpanel">
-          <div class="toolbar">
-        <label class="field-label" for="mapLat">Широта</label>
-        <input type="number" id="mapLat" class="num coord-num" value="59.93428" step="0.00001" min="-85" max="85" title="Широта центра карты, градусы">
-        <label class="field-label" for="mapLon">Долгота</label>
-        <input type="number" id="mapLon" class="num coord-num" value="30.33510" step="0.00001" min="-180" max="180" title="Долгота центра карты, градусы">
-        <button class="btn small" id="btnMapSearch" title="Найти место по координатам (центр карты, без постановки створа)">🔎 Найти</button>
-        <button class="btn small selected-accent" id="btnMapOutlet" title="Режим выбора створа: кликните по реке на карте">🎯 Выбрать створ</button>
-        <input type="text" id="mapMarkText" class="mark-label" placeholder="Подпись метки" size="14" title="Подпись для новой метки на карте">
-        <input type="number" id="markLat" class="num coord-num" placeholder="Широта метки" step="0.00001" title="Широта новой метки, градусы">
-        <input type="number" id="markLon" class="num coord-num" placeholder="Долгота метки" step="0.00001" title="Долгота новой метки, градусы">
-        <button class="btn small" id="btnMapMarkCoord" title="Поставить метку по введённым координатам">📍 По координатам</button>
-        <button class="btn small" id="btnMapMark" title="Режим меток: кликайте по карте, чтобы оставить отметки">📌 Метка</button>
-        <button class="btn small" id="btnMapClearMarks" title="Удалить все метки с карты">🗑 Метки</button>
-        <input type="color" id="drawColor" value="#5F0001" title="Цвет для рисунков поверх карты">
-        <button class="btn small" id="btnMapDraw" title="Рисовать произвольные линии на карте выбранным цветом">✏ Рисовать</button>
-        <button class="btn small" id="btnMapDrawClear" title="Удалить все рисунки с карты">🗑 Рисунки</button>
-          </div>
-        </details>
-        </div>
-        <div class="ribbon-panel" data-ribbon-panel="map-actions" role="tabpanel">
-          <div class="toolbar">
-        <button class="btn small" id="btnMapHome" title="Вернуться к центру — Санкт-Петербург">⌂</button>
-        <button class="btn small" id="btnMapZoomOut" title="Уменьшить масштаб карты">🔍−</button>
-        <button class="btn small" id="btnMapZoomIn" title="Увеличить масштаб карты">🔍+</button>
-        <button class="btn small" id="btnMapMinimap" title="Показать или скрыть мини-карту">🗺 Мини-карта</button>
-        <button class="btn accent" id="btnMapCatch">🌊 Водосбор → фото</button>
-        <button class="btn accent" id="btnMapDim">📐 Рассчитать D</button>
-        <button class="btn" id="btnMapPdf">💾 Отчёт PDF</button>
-        <span class="map-coords" id="mapCoords">30.33510° E, 59.93428° N</span>
-          </div>
-        </details>
-        </div>
         </div>
       </div>
 
@@ -327,54 +299,36 @@
             </div>
             <div class="placeholder" id="mapPlaceholder">
               <span class="placeholder-icon">🗺</span>
-              <strong>Карта и водосбор</strong>
-              <span>Кликните по руслу — водосбор по ЦМР → обрезанный снимок → все расчёты во вкладке «Фотоснимок»</span>
+              <strong>Карта</strong>
+              <span>Только просмотр: перетаскивайте карту и меняйте масштаб колесом мыши</span>
             </div>
           </div>
           <div class="canvas-foot map-foot">
             <span id="mapCredit">Карта: Esri · ЦМР: USGS EarthExplorer (NASADEM/SRTM), резерв — Copernicus DEM, Terrarium</span>
-            <a href="https://earthexplorer.usgs.gov/" target="_blank" rel="noopener noreferrer" title="Архив USGS EarthExplorer — источник NASADEM/SRTM">EarthExplorer ↗</a>
             <span id="mapZoom">z11 · 114 м/пиксель</span>
           </div>
-          <div class="marks-panel" id="marksPanel">
-            <div class="marks-head">Метки и рисунки <span class="note">— переименуйте, удалите или перейдите к координатам</span></div>
-            <div id="marksList"></div>
-          </div>
         </div>
-        <aside class="results map-results">
-          <div class="results-head"><h2>Результаты по карте</h2><span class="badge" id="mapBadge">ожидание</span></div>
-          <pre class="report" id="mapReport">КАРТА И ВОДОСБОР
+      </div>
 
-1. Перетаскивайте карту ЛКМ, меняйте масштаб колесом мыши.
-2. Режим «🎯 Выбрать створ» включён: кликните по руслу — появится красный маркер «1».
-3. «🌊 Водосбор → фото» — по ЦМР находится вся речная сеть и водосбор
-   до створа; спутниковый снимок обрезается по водосбору и открывается
-   во вкладке «Фотоснимок». Маска сети и створ переносятся туда автоматически,
-   D считается уже по этому снимку.
-4. Во вкладке «Фотоснимок» маску и створ можно поправить вручную и нажать
-   «📐 Рассчитать D» для пересчёта; оттуда же сохраняется PDF-отчёт.
-5. «📐 Рассчитать D» на карте — быстрый предварительный расчёт без перехода в фото.
-6. Поле «Вид» показывает снимок с водосбором, только снимок или только маску.
-7. Метки ставятся кнопкой «📌 Метка» или по координатам; кнопка «✏ Рисовать»
-   добавляет линии поверх карты. Повторное нажатие любой из них возвращает выбор створа.
-8. «🌐 EarthExplorer» открывает архив USGS — источник NASADEM/SRTM; координаты
-   центра копируются в буфер. Для скачивания исходных файлов нужен аккаунт USGS.</pre>
-          <div class="plot-box">
-            <div class="box-title">График log N(ε) — главное русло</div>
-            <img id="mapPlotImg" alt="График для главного русла" hidden>
-            <div class="plot-empty" id="mapPlotEmpty">График появится после расчёта</div>
-          </div>
-          <details id="mapTableDetails">
-            <summary>Таблица измерений n / ε / N(ε)</summary>
-            <div class="table-scroll" id="mapTableWrap"></div>
-          </details>
-        </aside>
+      <!-- Служебные элементы: скрыты, но нужны существующей логике просмотра карты. -->
+      <div hidden>
+        <input id="mapViewMode" value="image"><input id="ndwiThreshold" value="-25"><span id="ndwiValue"></span>
+        <button id="btnNdwi"></button><button id="btnWaterSelect"></button><button id="btnEarthExplorer"></button>
+        <input id="mapLat" value="59.93428"><input id="mapLon" value="30.33510">
+        <button id="btnMapSearch"></button><button id="btnMapOutlet"></button><button id="btnMapMarkCoord"></button>
+        <input id="mapMarkText"><input id="markLat"><input id="markLon">
+        <button id="btnMapMark"></button><button id="btnMapClearMarks"></button><input id="drawColor" value="#5F0001">
+        <button id="btnMapDraw"></button><button id="btnMapDrawClear"></button>
+        <button id="btnMapCatch"></button><button id="btnMapDim"></button><button id="btnMapPdf"></button>
+        <div id="marksPanel"><div id="marksList"></div></div>
+        <span id="mapBadge"></span><pre id="mapReport"></pre><img id="mapPlotImg"><div id="mapPlotEmpty"></div>
+        <details id="mapTableDetails"><div id="mapTableWrap"></div></details>
       </div>
     </section>
   </main>
 
   <footer class="statusbar">
-    <span class="status-main" id="status">Готово. Загрузите снимок или откройте вкладку «Карта и водосбор».</span>
+    <span class="status-main" id="status">Готово. Загрузите снимок или TIFF с водой; вкладка «Карта» — только для просмотра.</span>
     <span id="statusRight">Инструмент: 🖱 Точка расхода (створ)</span>
   </footer>
 </div>
@@ -408,7 +362,7 @@
 <div class="toast" id="toast" hidden></div>
 
 <script src="vendor/leaflet/leaflet.js?v=1"></script>
-<script src="client-core.js?v=16"></script>
-<script src="app.js?v=21"></script>
+<script src="client-core.js?v=17"></script>
+<script src="app.js?v=22"></script>
 </body>
 </html>
