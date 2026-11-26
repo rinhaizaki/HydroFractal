@@ -808,7 +808,7 @@
       photo: photo.canvas.toDataURL('image/png'),
       mask: maskToPng(mask, W, H),
       width: W, height: H, water_pixels: water, threshold,
-      max: maxThreshold,
+      max: maxThreshold, geo: raster.bbox || null,
       downsampled: !!raster.step && raster.step > 1,
       seed: {x: Math.round(sx / water), y: Math.round(sy / water)}
     };
@@ -829,7 +829,8 @@
         const raster = parsed.length === 1
           ? parsed[0]
           : {W: parsed[0].W, H: parsed[0].H, samples: parsed.length,
-             bands: [parsed[0].bands[0], parsed[1].bands[0]]};
+             bands: [parsed[0].bands[0], parsed[1].bands[0]],
+             bbox: parsed[0].bbox || null};
         if (raster.W !== (parsed[1] ? parsed[1].W : raster.W) ||
             raster.H !== (parsed[1] ? parsed[1].H : raster.H)) {
           throw new Error('Размеры TIFF-файлов не совпадают.');
