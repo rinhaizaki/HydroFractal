@@ -118,6 +118,199 @@
     const comma = dataURL.indexOf(',');
     return Uint8Array.from(atob(dataURL.slice(comma + 1)), (c) => c.charCodeAt(0));
   }
+  // ------------------------------------------------------------ TIFF + NDWI
+  async function inflateTiffBytes(bytes) {
+    if (typeof DecompressionStream === 'undefined') {
+      throw new Error('Сжатый TIFF не поддерживается этим браузером.');
+    }
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  async function parseTiffRaster(bytes, name) {
+    if (bytes.byteLength < 16) throw new Error('Файл TIFF слишком короткий.');
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const le = dv.getUint16(0, true) === 0x4949;
+    if (dv.getUint16(0, le) !== 0x4949 && dv.getUint16(0, le) !== 0x4d4d) {
+      throw new Error('Это не TIFF: ' + name);
+    }
+    if (dv.getUint16(2, le) !== 42) throw new Error('BigTIFF не поддерживается: ' + name);
+    const sizes = {1:1, 2:1, 3:2, 4:4, 5:8, 6:1, 7:1, 8:2, 9:4, 10:8, 11:4, 12:8};
+    const readNum = (pos, type) => {
+      switch (type) {
+        case 1: case 2: case 6: case 7: return dv.getUint8(pos);
+        case 3: return dv.getUint16(pos, le);
+        case 8: return dv.getInt16(pos, le);
+        case 4: return dv.getUint32(pos, le);
+        case 9: return dv.getInt32(pos, le);
+        case 11: return dv.getFloat32(pos, le);
+        case 12: return dv.getFloat64(pos, le);
+        default: throw new Error('Неподдерживаемый тип TIFF: ' + type);
+      }
+    };
+    const entries = {};
+    const ifd = dv.getUint32(4, le);
+    const nTags = dv.getUint16(ifd, le);
+    for (let i = 0; i < nTags; i++) {
+      const pos = ifd + 2 + i * 12;
+      const tag = dv.getUint16(pos, le), type = dv.getUint16(pos + 2, le);
+      const count = dv.getUint32(pos + 4, le), size = sizes[type];
+      if (!size) continue;
+      entries[tag] = {type, count, size, pos, at: size * count <= 4 ? pos + 8 : dv.getUint32(pos + 8, le)};
+    }
+    const arr = (tag) => {
+      const e = entries[tag];
+      if (!e) return null;
+      const out = [];
+      for (let i = 0; i < e.count; i++) {
+        if (e.type === 5 || e.type === 10) {
+          const num = readNum(e.at + i * 8, e.type), den = readNum(e.at + i * 8 + 4, e.type);
+          out.push(den ? num / den : NaN);
+        } else out.push(readNum(e.at + i * e.size, e.type));
+      }
+      return out;
+    };
+    const one = (tag, fallback) => { const a = arr(tag); return a && a.length ? a[0] : fallback; };
+    const W = one(256, 0), H = one(257, 0);
+    if (!W || !H || W > 20000 || H > 20000) throw new Error('Некорректный размер TIFF: ' + name);
+    const samples = one(277, 1);
+    const bitsArr = arr(258) || [one(258, 8)];
+    const bits = bitsArr[0];
+    const format = (arr(339) || [1])[0];
+    const compression = one(259, 1);
+    const planar = one(284, 1);
+    if (compression !== 1 && compression !== 8 && compression !== 32946) {
+      throw new Error('Неподдерживаемое сжатие TIFF: ' + name);
+    }
+    if (bits !== 8 && bits !== 16 && bits !== 32) {
+      throw new Error('Нужны 8/16/32-битные каналы: ' + name);
+    }
+    if (planar !== 1 && planar !== 2) throw new Error('Неподдерживаемая планировка TIFF: ' + name);
+    const offsets = arr(273), counts = arr(279);
+    if (!offsets || !counts || !offsets.length) throw new Error('В TIFF нет данных: ' + name);
+    const rowsPerStrip = Math.max(1, one(278, H));
+    const nStrips = Math.ceil(H / rowsPerStrip);
+    const bytesPerSample = bits / 8;
+    const out = [];
+    for (let b = 0; b < samples; b++) {
+      out.push(new Float32Array(W * H));
+      for (let i = 0; i < out[b].length; i++) out[b][i] = NaN;
+    }
+    const readAt = (raw, index) => {
+      const q = index * bytesPerSample;
+      if (bits === 8) return raw[q];
+      if (bits === 16) {
+        const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+        if (format === 2) return view.getInt16(q, le);
+        return view.getUint16(q, le);
+      }
+      const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+      if (format === 3) return view.getFloat32(q, le);
+      if (format === 2) return view.getInt32(q, le);
+      return view.getUint32(q, le);
+    };
+    for (let strip = 0; strip < nStrips; strip++) {
+      const rows = Math.min(rowsPerStrip, H - strip * rowsPerStrip);
+      const planeCount = planar === 2 ? samples : 1;
+      for (let plane = 0; plane < planeCount; plane++) {
+        const idx = planar === 2 ? plane * nStrips + strip : strip;
+        if (idx >= offsets.length || idx >= counts.length) continue;
+        let raw = bytes.subarray(offsets[idx], offsets[idx] + counts[idx]);
+        if (compression === 8 || compression === 32946) raw = await inflateTiffBytes(raw);
+        for (let r = 0; r < rows; r++) {
+          for (let x = 0; x < W; x++) {
+            const dest = (strip * rowsPerStrip + r) * W + x;
+            if (planar === 2) {
+              const src = r * W + x;
+              if ((src + 1) * bytesPerSample <= raw.length) out[plane][dest] = readAt(raw, src);
+            } else {
+              const base = (r * W + x) * samples;
+              for (let s = 0; s < samples; s++) {
+                if ((base + s + 1) * bytesPerSample <= raw.length) out[s][dest] = readAt(raw, base + s);
+              }
+            }
+          }
+        }
+      }
+    }
+    return {name, W, H, samples, bands: out};
+  }
+
+  function bandToRgb(band, W, H) {
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < band.length; i++) {
+      const v = band[i];
+      if (!Number.isFinite(v)) continue;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    if (!Number.isFinite(lo) || hi <= lo) {
+      return Uint8ClampedArray.from({length: W * H}, () => 128);
+    }
+    const out = new Uint8ClampedArray(W * H);
+    for (let i = 0; i < out.length; i++) {
+      out[i] = Number.isFinite(band[i]) ? Math.round(255 * (band[i] - lo) / (hi - lo)) : 0;
+    }
+    return out;
+  }
+
+  function ndwiFromRaster(raster, greenIdx, nirIdx, threshold) {
+    const g = raster.bands[greenIdx - 1], n = raster.bands[nirIdx - 1];
+    if (!g || !n) throw new Error('В TIFF нет выбранного канала. Проверьте номера каналов.');
+    const W = raster.W, H = raster.H;
+    const mask = new Uint8Array(W * H);
+    let water = 0, sx = 0, sy = 0;
+    for (let i = 0; i < mask.length; i++) {
+      const a = g[i], b = n[i];
+      if (!Number.isFinite(a) || !Number.isFinite(b) || a + b <= 0) continue;
+      const ndwi = (a - b) / (a + b);
+      if (ndwi >= threshold) {
+        mask[i] = 1; water++;
+        sx += i % W; sy += Math.floor(i / W);
+      }
+    }
+    if (!water) throw new Error('Вода по NDWI не найдена — проверьте каналы и порог.');
+    const red = bandToRgb(raster.bands[0] || g, W, H);
+    const green = bandToRgb(raster.bands.length > 1 ? raster.bands[1] : g, W, H);
+    const blue = bandToRgb(raster.bands.length > 2 ? raster.bands[2] : g, W, H);
+    const photo = canvasContext(W, H);
+    const pixels = photo.ctx.createImageData(W, H);
+    for (let i = 0; i < mask.length; i++) {
+      const q = i * 4;
+      pixels.data[q] = red[i]; pixels.data[q + 1] = green[i]; pixels.data[q + 2] = blue[i];
+      pixels.data[q + 3] = 255;
+    }
+    photo.ctx.putImageData(pixels, 0, 0);
+    return {
+      ok: true,
+      photo: photo.canvas.toDataURL('image/png'),
+      mask: maskToPng(mask, W, H),
+      width: W, height: H, water_pixels: water, threshold,
+      seed: {x: Math.round(sx / water), y: Math.round(sy / water)}
+    };
+  }
+
+  function tiffNdwi(p) {
+    const files = p.files || [];
+    if (!files.length) return Promise.reject(new Error('Выберите TIFF-файл.'));
+    const threshold = Number(p.threshold === undefined ? -0.25 : p.threshold);
+    return Promise.all(files.slice(0, 2).map((f) =>
+      parseTiffRaster(dataUrlToBytes(f.data), f.name || 'raster.tif')))
+      .then((parsed) => {
+        const raster = parsed.length === 1
+          ? parsed[0]
+          : {W: parsed[0].W, H: parsed[0].H, samples: parsed.length,
+             bands: [parsed[0].bands[0], parsed[1].bands[0]]};
+        if (raster.W !== (parsed[1] ? parsed[1].W : raster.W) ||
+            raster.H !== (parsed[1] ? parsed[1].H : raster.H)) {
+          throw new Error('Размеры TIFF-файлов не совпадают.');
+        }
+        const greenIdx = parsed.length === 1 ? Number(p.green || 1) : 1;
+        const nirIdx = parsed.length === 1 ? Number(p.nir || 2) : 2;
+        return ndwiFromRaster(raster, greenIdx, nirIdx, threshold);
+      });
+  }
+
   function bytesToDataUrl(bytes, mime) {
     let binary = '';
     const step = 8192;
@@ -1672,6 +1865,8 @@
           r.water_pixels = mask.reduce((a, b) => a + b, 0);
           return { ok: true, result: cleanResult(r, object) };
         });
+      case '/api/tiff/ndwi':
+        return tiffNdwi(p);
       case '/api/map/view':
         return mapView(p);
       case '/api/map/analyze':

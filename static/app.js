@@ -25,6 +25,8 @@
     mapCredit: $('mapCredit'), mapZoom: $('mapZoom'), mapCoords: $('mapCoords'),
     mapLat: $('mapLat'), mapLon: $('mapLon'), mapMarkText: $('mapMarkText'),
     ndwiThreshold: $('ndwiThreshold'), mapViewMode: $('mapViewMode'),
+    tiffFile: $('tiffFile'), tiffGreen: $('tiffGreen'), tiffNir: $('tiffNir'),
+    tiffNdwiThreshold: $('tiffNdwiThreshold'), tiffNdwiValue: $('tiffNdwiValue'),
     leafletWrap: $('leafletMap'),
     mapMinimapBox: $('mapMinimapBox'), mapMinimapCanvas: $('mapMinimapCanvas'),
     status: $('status'), statusRight: $('statusRight'),
@@ -147,7 +149,7 @@
   function busy(isBusy, message) {
     document.body.style.cursor = isBusy ? 'progress' : '';
     if (message) status(message);
-    ['btnSegment', 'btnAnalyze', 'btnSaveMask', 'btnSaveReport', 'btnMapCatch', 'btnMapDim', 'btnMapPdf']
+    ['btnSegment', 'btnAnalyze', 'btnSaveMask', 'btnSaveReport', 'btnTiffNdwi', 'btnMapCatch', 'btnMapDim', 'btnMapPdf']
       .forEach((id) => { $(id).disabled = isBusy; });
   }
   function openModal(title, html) {
@@ -732,6 +734,53 @@
     status('Снимок закрыт.');
   }
 
+  // ---------------------------------------------------------- TIFF → NDWI → фото
+  function ndwiLabel() {
+    return 'NDWI ≥ ' + (Number(el.tiffNdwiThreshold.value) / 100).toFixed(2).replace('.', ',');
+  }
+  async function tiffToPhoto() {
+    const files = Array.from(el.tiffFile.files || []);
+    if (!files.length) { toast('Выберите TIFF-файл.'); return; }
+    if (files.length > 2) { toast('Нужно один многоканальный TIFF или два файла: зелёный и NIR.'); return; }
+    busy(true, 'Читаем TIFF и считаем NDWI…');
+    try {
+      const payload = {files: [], green: Number(el.tiffGreen.value) || 1,
+        nir: Number(el.tiffNir.value) || 2,
+        threshold: Number(el.tiffNdwiThreshold.value) / 100};
+      for (const file of files) {
+        const data = await new Promise((resolve, reject) => {
+          const rd = new FileReader();
+          rd.onload = () => resolve(String(rd.result));
+          rd.onerror = () => reject(new Error('Не удалось прочитать ' + file.name));
+          rd.readAsDataURL(file);
+        });
+        payload.files.push({name: file.name, data});
+      }
+      const resp = await api('/api/tiff/ndwi', payload);
+      await showPhoto(resp.photo, 'TIFF → NDWI');
+      await setMaskFromDataURL(resp.mask);
+      S.seed = resp.seed || null;
+      S.waterPixels = resp.water_pixels;
+      S.waterShare = Math.round(10000 * resp.water_pixels / (resp.width * resp.height)) / 100;
+      S.maskTouched = false;
+      S.cropped = false;
+      renderPhoto();
+      const r = await api('/api/analyze', {
+        mask: maskForApi(), object: $('object').value,
+        max_divs: Number($('maxDivsNum').value)
+      });
+      S.result = r.result;
+      showResult(S.result);
+      setBadge('resultBadge', 'готово', 'ok');
+      status(`NDWI ≥ ${(resp.threshold).toFixed(2).replace('.', ',')}: вода ` +
+        `${fmt(resp.water_pixels, 0)} px из ${fmt(resp.width, 0)}×${fmt(resp.height, 0)}. ` +
+        `D по выделенной воде = ${fmt(S.result.D, 4)}.`);
+      toast('Вода по NDWI выделена');
+    } catch (e) {
+      status(e.message, true); toast(e.message);
+    } finally { busy(false); }
+  }
+
   // ---------------------------------------------------------- вычисления фото
   async function segment() {
     if (!S.image) { toast('Сначала загрузите снимок.'); return; }
@@ -1224,15 +1273,7 @@
       });
     }
     map.on('click', (e) => {
-      if (S.map.drawMode) return;
-      if (S.map.markMode) {
-        addMapMark(e.latlng.lat, e.latlng.lng);
-        return;
-      }
-      S.map.outlet = { lon: e.latlng.lng, lat: e.latlng.lat };
-      renderMap();
-      status(`Створ установлен: ${fmt(e.latlng.lat, 5)}° N, ` +
-        `${fmt(e.latlng.lng, 5)}° E. Нажмите «🌊 Водосбор → фото».`);
+      if (S.map.markMode) addMapMark(e.latlng.lat, e.latlng.lng);
     });
     setTimeout(() => { map.invalidateSize(); sync(); }, 0);
   }
@@ -2007,6 +2048,8 @@
     });
     $('btnSegment').addEventListener('click', segment);
     $('btnAnalyze').addEventListener('click', analyze);
+    $('btnTiffNdwi').addEventListener('click', tiffToPhoto);
+    el.tiffNdwiThreshold.addEventListener('input', () => { el.tiffNdwiValue.textContent = ndwiLabel(); });
     $('btnSaveMask').addEventListener('click', saveMask);
     $('btnSaveReport').addEventListener('click', saveReport);
     $('btnUndo').addEventListener('click', undo);
@@ -2381,9 +2424,6 @@
         const rect = el.mapCanvas.getBoundingClientRect();
         const g = mapGeoAt(e.clientX - rect.left, e.clientY - rect.top);
         if (S.map.markMode) { addMapMark(g.lat, g.lon); return; }
-        S.map.outlet = { lon: g.lon, lat: g.lat };
-        renderMap();
-        status(`Створ установлен: ${fmt(g.lat, 5)}° N, ${fmt(g.lon, 5)}° E. Нажмите «🌊 Водосбор → фото».`);
       }
     });
     el.mapCanvas.addEventListener('wheel', (e) => {
@@ -2464,7 +2504,7 @@
     'view-overlay': 'Вид → Снимок + маска', 'view-image': 'Вид → Только снимок',
     'view-mask': 'Вид → Только маска', 'toggle-minimap': 'Вид → Карта просмотра',
     'zoom-fit': 'Вид → Показать всё', 'tab-photo': 'Переход → Фотоснимок',
-    'tab-map': 'Переход → Карта и водосбор', 'help': 'Справка → Инструкция',
+    'tab-map': 'Переход → Карта (только просмотр)', 'help': 'Справка → Инструкция',
     'about': 'Справка → О программе',
     'rot1': '⟲ 90°', 'rot3': '⟳ 90°', 'rot2': '180°', 'fliph': '⇋ отразить', 'flipv': '⇵ отразить',
     'btnLoad': '📂 Загрузить снимок', 'btnLoadBig': '📂 Выбрать файл',
@@ -2473,7 +2513,7 @@
     'btnSaveMask': '💾 Сохранить маску (PNG)', 'btnSaveReport': '📄 Сохранить отчёт (PDF)',
     'btnUndo': '↶ Назад', 'btnRedo': '↷ Вперёд', 'btnZoomIn': '🔍+ (снимок)',
     'btnZoomOut': '🔍− (снимок)', 'btnZoomFit': '⛶ Всё', 'btnMinimap': '🗺 Карта (снимок)',
-    'photo': 'Вкладка «Фотоснимок»', 'map': 'Вкладка «Карта и водосбор»',
+    'photo': 'Вкладка «Фотоснимок»', 'map': 'Вкладка «Карта» (просмотр)',
     'btnMapSearch': '🔎 Найти', 'btnMapHome': '⌂', 'btnMapZoomIn': '🔍+ (карта)',
     'btnMapZoomOut': '🔍− (карта)', 'btnMapMinimap': '🗺 Мини-карта',
     'btnMapMark': '📌 Метка', 'btnMapClearMarks': '🗑 Метки',
@@ -2550,24 +2590,20 @@
         <li><b>Колесо мыши</b> масштабирует холст до 12× с привязкой к курсору; Ctrl+Z / Ctrl+Y —
           отмена и повтор; кнопки ориентации поворачивают снимок вместе с маской и точками.</li>
       </ul>
-      <h2>4. Карта и водосбор</h2>
+      <h2>4. TIFF, NDWI и карта</h2>
       <ol>
-        <li>Откройте вкладку «🗺 Карта и водосбор». Подложка — Sentinel-2 L2A
-          (Copernicus / Planetary Computer) через Leaflet; при недоступности — Esri
-          и Google Satellite. OpenTopoMap не используется.</li>
-        <li>Панорамируйте карту мышью, масштабируйте колесом или кнопками 🔍+/🔍−.
-          Кнопка «⌂» возвращает к Санкт-Петербургу.</li>
-        <li>Поля «Широта» / «Долгота» и кнопка «🔎 Найти» <b>только центрируют карту</b>,
-          створ не ставят. Режим «🎯 Выбрать створ» включён по умолчанию: клик по руслу
-          ставит красный маркер «1».</li>
-        <li>Кнопка «🌊 Водосбор → фото» строит по ЦМР полную речную сеть и водосбор,
-          обрезает снимок по водосбору и открывает его в «Фотоснимке» для расчёта D.</li>
-        <li>В режиме «📌 Метка» клики по подложке ставят пронумерованные заметки с подписью
-          из поля «Подпись метки»; «🗑 Метки» удаляет их. Метки попадают в PDF-отчёт.</li>
-        <li>Кнопка «💧 NDWI» показывает индекс воды по каналам B03 (зелёный) и B08 (ИК)
-          снимка Sentinel-2. «🎯 Вода» выделяет водные объекты по порогу NDWI и подписывает
-          их площадь — это работает как слой ГИС поверх ЦМР.</li>
-        <li>«📐 Рассчитать D» считает D по главному руслу. «💾 Отчёт PDF» формирует сводный отчёт.</li>
+        <li>Во вкладке «Фотоснимок» откройте ленту «TIFF и NDWI» и загрузите
+          один многоканальный TIFF или два TIFF с одним каналом каждый
+          (зелёный и ближний инфракрасный).</li>
+        <li>Поля «Зелёный канал» и «NIR-канал» задают номера каналов в TIFF,
+          начиная с 1. Для двух файлов каналы берутся по порядку: первый — зелёный,
+          второй — NIR.</li>
+        <li>Порог NDWI ≥ −0,25 (диапазон ползунка −1…+1). Нажмите
+          «💧 Выделить воду по NDWI» — приложение подготовит снимок и маску
+          воды и сразу рассчитает D и характеристики стока.</li>
+        <li>Маску и створ можно поправить вручную, затем нажать «📐 Рассчитать D».</li>
+        <li>Вкладка «🗺 Карта» нужна только для просмотра подложки: панорамирование,
+          масштаб, мини-карта. Расчётов там нет.</li>
       </ol>
       <h2>5. Отчёт</h2>
       <p>PDF повторяет эталон: титул, разделы I–VII, таблицы 1–5, рисунки 1–4, формулы (1)–(11)
@@ -2674,7 +2710,7 @@
 к этому месту на основном холсте.`,
     'zoom-fit': 'Вернуться к масштабу «вся картинка» и центру.',
     'tab-photo': 'Перейти к работе со спутниковым снимком: HSV-сегментация, маска и D.',
-    'tab-map': 'Перейти к карте: рельеф, водосбор, главное русло, Стралер и D.',
+    'tab-map': 'Перейти к карте только для просмотра подложки.',
     'help': 'Открыть краткую инструкцию по работе.',
     'about': 'Сведения о HydroFractal и алгоритмах.',
     // Кнопки снимка — тексты из настольной программы
@@ -2695,6 +2731,7 @@ D после обрезки нужно пересчитать заново.`,
 «Способом выделения», «Допуском» и флажком «Только крупнейшая
 область».
 Внимание: ручные правки ластиком/кистью при этом теряются.`,
+    btnTiffNdwi: 'Читает TIFF (один многоканальный или два файла: зелёный и NIR), выделяет воду по NDWI и сразу считает D по этой маске.',
     'btnAnalyze': `Метод Кантора (квадраты).
 Изображение покрывается сеткой n×n, n увеличивается
 на 1 за шаг; ε = side/n. N(ε) — число клеток, по которым
@@ -2734,7 +2771,7 @@ D после обрезки нужно пересчитать заново.`,
     'flipv': `Зеркальное отражение сверху вниз.
 Отражаются снимок, маска и точки. На D не влияет.`,
     'photo': 'Вкладка анализа спутникового снимка.',
-    'map': 'Вкладка карты и водосбора.',
+    'map': 'Вкладка карты только для просмотра.',
     // Кнопки карты
     'btnMapOutlet': `Режим выбора створа (включён по умолчанию): кликните по руслу реки,
 чтобы поставить красный маркер «1». Сюда же возвращают кнопки меток/рисования при повторном нажатии.`,
@@ -2847,7 +2884,7 @@ N(ε) на малых размерах ячеек и завышают D.
 Если оставить пустым — будет «not set».`,
     mapSource: 'Подложка Sentinel-2 L2A через Planetary Computer STAC + TiTiler; резерв — Esri / Google Satellite. OpenTopoMap отключён.',
     ndwiThreshold: 'Порог NDWI от −1 до +1 включительно. Вода учитывается при NDWI ≥ порога (по умолчанию −0,25).',
-    mapRelief: 'Показать отмывку по Copernicus DEM GLO-30 (Planetary Computer). Та же ЦМР используется для расчёта водосбора и главного русла.',
+    mapRelief: 'Показать отмывку рельефа по ЦМР Planetary Computer.',
     mapMarkText: 'Подпись для следующей метки на карте. Оставьте пустым — будет автоматическая нумерация.',
     mapLat: 'Широта центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.',
     mapLon: 'Долгота центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.'
@@ -2860,7 +2897,7 @@ N(ε) на малых размерах ячеек и завышают D.
     photoMarkColor: 'Цвет новых меток и рисунков-заметок на фото; цвет метки меняется в списке справа.',
     btnPhotoDrawFree: 'Рисовать цветные заметки прямо на снимке — линии привязаны к пикселям снимка.',
     btnPhotoDraw: 'Кисть маски: дорисовывает выделение воды на снимке; ластик удаляет лишнее.',
-    mapViewMode: 'Что показывать после построения водосбора: подложку вместе с маской, только спутник или только маску водосбора и речной сети.',
+    mapViewMode: 'Режим просмотра подложки.',
     markLat: 'Широта новой метки в градусах (−85…85).',
     markLon: 'Долгота новой метки в градусах (−180…180).',
     btnMapMarkCoord: 'Поставить метку по введённым координатам и центрировать на ней карту.',
@@ -2874,7 +2911,7 @@ N(ε) на малых размерах ячеек и завышают D.
     btnNdwi: 'Показать или скрыть слой NDWI (B03/B08) по Sentinel-2 через Planetary Computer.',
     btnWaterSelect: 'Выделить водные объекты по порогу NDWI и показать их площадь.',
     ndwiThreshold: 'Порог NDWI: вода учитывается при NDWI ≥ выбранного значения.',
-    mapRelief: 'Отмывка рельефа по ЦМР Planetary Computer; она же используется для расчёта водосбора.',
+    mapRelief: 'Отмывка рельефа по ЦМР Planetary Computer.',
     mapSource: 'Основной слой — Sentinel-2 L2A через Planetary Computer, резерв — Esri / Google.'
   };
   function initTooltips() {
