@@ -179,7 +179,7 @@
     const format = (arr(339) || [1])[0];
     const compression = one(259, 1);
     const planar = one(284, 1);
-    if (compression !== 1 && compression !== 5 && compression !== 8 && compression !== 32946) {
+    if (compression !== 1 && compression !== 8 && compression !== 32946) {
       throw new Error('Неподдерживаемое сжатие TIFF: ' + name);
     }
     if (bits !== 8 && bits !== 16 && bits !== 32) {
@@ -312,6 +312,20 @@
     return a && a.length ? a[0] : fallback;
   };
 
+  function inflateTiffPackbits(raw) {
+    const out = [];
+    for (let i = 0; i < raw.length;) {
+      const n = raw[i++] << 24 >> 24;
+      if (n >= 0) {
+        for (let k = 0; k <= n && i < raw.length; k++) out.push(raw[i++]);
+      } else if (n !== -128 && i < raw.length) {
+        const b = raw[i++];
+        for (let k = 0; k < 1 - n; k++) out.push(b);
+      }
+    }
+    return Uint8Array.from(out);
+  }
+
   // LZW из TIFF (код из geotiff.js, лицензия MIT — см. vendor/geotiff.LICENSE).
   // Нужен, чтобы BigTIFF со сжатием LZW читался потоково, без выделения
   // всего изображения в память через geotiff.js.
@@ -441,7 +455,8 @@
     const format = (tiffTag(e, 339, le) || [1])[0];
     const compression = tiffOne(e, 259, 1, le);
     const planar = tiffOne(e, 284, 1, le);
-    if (compression !== 1 && compression !== 8 && compression !== 32946) {
+    if (compression !== 1 && compression !== 5 && compression !== 7 &&
+        compression !== 8 && compression !== 32773 && compression !== 32946) {
       throw new Error('Сжатие TIFF ' + compression + ' не поддерживается потоковым чтением: ' + file.name);
     }
     if (![8, 16, 32].includes(bits)) throw new Error('Нужны 8/16/32-битные каналы');
@@ -463,7 +478,9 @@
     const totalChunks = tiled ? chunksAcross * Math.ceil(H / tileH) : Math.ceil(H / rowsPerStrip);
     const bpp = bits / 8;
     const sampleStride = planar === 2 ? bpp : samples * bpp;
-    const compressed = compression === 5 || compression === 8 || compression === 32946;
+    if (compression === 7) throw new Error('JPEG в TIFF читается библиотекой GeoTIFF.');
+    const compressed = compression === 5 || compression === 8 ||
+      compression === 32773 || compression === 32946;
     const cache = new Map();
 
     const valueAt = (raw, bytePos) => {
@@ -513,8 +530,9 @@
           const minLx = Math.max(0, sx - chunkX0);
           const maxLx = Math.min(chunkW - 1, Math.min(W - 1, xe * step) - chunkX0);
           if (maxLx < minLx) { x = xe + 1; continue; }
-          let raw, baseLx = 0;
+          let raw, baseSamples = 0;
           if (compressed) {
+            baseSamples = ly * chunkW;
             const key = idx;
             raw = cache.get(key);
             if (!raw) {
@@ -523,7 +541,9 @@
                   Math.round(counts[idx] / 1048576) + ' МБ): ' + file.name);
               }
               raw = await blobSlice(file, offsets[idx], counts[idx]);
-              raw = compression === 5 ? inflateTiffLzw(raw) : await inflateTiffBytes(raw);
+              if (compression === 5) raw = inflateTiffLzw(raw);
+              else if (compression === 32773) raw = inflateTiffPackbits(raw);
+              else raw = await inflateTiffBytes(raw);
               undoPredictor(raw, chunkW);
               cache.set(key, raw);
             }
@@ -535,11 +555,11 @@
               throw new Error('Строка TIFF слишком велика: ' + file.name);
             }
             raw = await blobSlice(file, start, len);
-            baseLx = minLx;
+            baseSamples = -minLx;
           }
           for (let x2 = x; x2 <= xe; x2++) {
             const lx = x2 * step - chunkX0;
-            const q = (baseLx + lx) * sampleStride;
+            const q = (baseSamples + lx) * sampleStride;
             const dest = y * outW + x2;
             if (planar === 2) {
               bands[plane][dest] = valueAt(raw, q);
@@ -622,19 +642,29 @@
     return dv.getUint16(2, le) === 43;
   }
 
+  async function tiffCompression(file) {
+    const head = await blobSlice(file, 0, 16);
+    if (head.length < 16) return null;
+    const dv = new DataView(head.buffer);
+    const le = dv.getUint16(0, true) === 0x4949;
+    const magic = dv.getUint16(2, le);
+    if (magic !== 42 && magic !== 43) return null;
+    const big = magic === 43;
+    const off = big ? Number(dv.getBigUint64(8, le)) : dv.getUint32(4, le);
+    const ifd = await readTiffIfd(file, off, le, big);
+    return tiffOne(ifd.entries, 259, 1, le);
+  }
+
   async function decodeTiffBlobSmart(file) {
-    // BigTIFF и гигантские полосы надёжнее читать потоково: geotiff.js
-    // пытается выделить весь буфер сразу. Для LZW/JPEG всё же пробуем его.
-    let bigErr = null;
-    if (await isBigTiff(file)) {
-      try {
-        return await decodeTiffBlob(file);
-      } catch (e) {
-        if (!/Сжатие TIFF/.test(e.message || '')) throw e;
-        bigErr = e;
-      }
+    // geotiff.js выделяет под страйп/тайл весь буфер: на файлах в несколько
+    // ГБ это приводит к «Array buffer allocation failed». Поэтому все
+    // поддерживаемые потоковым декодером сжатия читаем сами.
+    let comp = null;
+    try { comp = await tiffCompression(file); } catch (e) { comp = null; }
+    if (comp === null || [1, 5, 8, 32773, 32946].includes(comp)) {
+      return decodeTiffBlob(file);
     }
-    let geErr = bigErr;
+    let geErr = null;
     try {
       const {image} = await geotiffSource(file);
       const SW = image.getWidth(), SH = image.getHeight();
