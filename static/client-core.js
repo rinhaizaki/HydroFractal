@@ -236,6 +236,171 @@
     return {name, W, H, samples, bands: out};
   }
 
+  // Потоковый чтение TIFF из File/Blob: не загружает 10 ГБ в память.
+  // Берём самый маленький IFD в цепочке (обычно это overview) и при нужде
+  // прореживаем пиксели, чтобы маска оставалась ограниченного размера.
+  const TIFF_MAX_PIXELS = 4_000_000;
+
+  async function blobSlice(blob, offset, length) {
+    if (length <= 0) return new Uint8Array(0);
+    return new Uint8Array(await blob.slice(offset, offset + length).arrayBuffer());
+  }
+  function tiffNum(data, type, idx, le) {
+    const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    switch (type) {
+      case 1: case 2: case 6: case 7: return dv.getUint8(idx);
+      case 3: return dv.getUint16(idx, le);
+      case 8: return dv.getInt16(idx, le);
+      case 4: return dv.getUint32(idx, le);
+      case 9: return dv.getInt32(idx, le);
+      case 11: return dv.getFloat32(idx, le);
+      case 12: return dv.getFloat64(idx, le);
+      default: throw new Error('Неподдерживаемый тип TIFF: ' + type);
+    }
+  }
+  async function readTiffIfd(file, offset, le) {
+    const sizes = {1:1, 2:1, 3:2, 4:4, 5:8, 6:1, 7:1, 8:2, 9:4, 10:8, 11:4, 12:8};
+    const head = await blobSlice(file, offset, 2);
+    const count = new DataView(head.buffer).getUint16(0, le);
+    const buf = await blobSlice(file, offset + 2, count * 12 + 4);
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const entries = {};
+    for (let i = 0; i < count; i++) {
+      const pos = i * 12;
+      const tag = dv.getUint16(pos, le), type = dv.getUint16(pos + 2, le);
+      const n = dv.getUint32(pos + 4, le), size = sizes[type] || 0;
+      if (!size) continue;
+      const inline = size * n <= 4;
+      const data = inline ? buf.subarray(pos + 8, pos + 8 + size * n)
+        : await blobSlice(file, dv.getUint32(pos + 8, le), size * n);
+      entries[tag] = {type, count: n, data};
+    }
+    const next = dv.getUint32(count * 12, le);
+    return {entries, next};
+  }
+  function tiffTag(entries, tag, le) {
+    const e = entries[tag];
+    if (!e) return null;
+    const out = [];
+    for (let i = 0; i < e.count; i++) {
+      if (e.type === 5 || e.type === 10) {
+        const num = tiffNum(e.data, e.type, i * 8, le);
+        const den = tiffNum(e.data, e.type, i * 8 + 4, le);
+        out.push(den ? num / den : NaN);
+      } else out.push(tiffNum(e.data, e.type, i, le));
+    }
+    return out;
+  }
+  const tiffOne = (entries, tag, fallback, le) => {
+    const a = tiffTag(entries, tag, le);
+    return a && a.length ? a[0] : fallback;
+  };
+
+  async function decodeTiffBlob(file) {
+    const head = await blobSlice(file, 0, 16);
+    if (head.length < 16) throw new Error('Файл слишком короткий: ' + file.name);
+    const dv = new DataView(head.buffer);
+    const le = dv.getUint16(0, true) === 0x4949;
+    if (dv.getUint16(0, le) !== 0x4949 && dv.getUint16(0, le) !== 0x4d4d) {
+      throw new Error('Это не TIFF: ' + file.name);
+    }
+    if (dv.getUint16(2, le) !== 42) throw new Error('BigTIFF не поддерживается: ' + file.name);
+
+    let offset = dv.getUint32(4, le);
+    const ifds = [];
+    while (offset && ifds.length < 24) {
+      const ifd = await readTiffIfd(file, offset, le);
+      const W = tiffOne(ifd.entries, 256, 0, le), H = tiffOne(ifd.entries, 257, 0, le);
+      if (W > 0 && H > 0) ifds.push({offset, ...ifd, W, H});
+      offset = ifd.next;
+    }
+    if (!ifds.length) throw new Error('В TIFF нет изображения: ' + file.name);
+    let chosen = ifds[0];
+    for (const ifd of ifds) {
+      if (ifd.W * ifd.H <= TIFF_MAX_PIXELS && ifd.W * ifd.H >= chosen.W * chosen.H) chosen = ifd;
+    }
+    const e = chosen.entries;
+    const W = chosen.W, H = chosen.H;
+    const samples = tiffOne(e, 277, 1, le);
+    const bitsArr = tiffTag(e, 258, le) || [tiffOne(e, 258, 8, le)];
+    const bits = bitsArr[0];
+    const format = (tiffTag(e, 339, le) || [1])[0];
+    const compression = tiffOne(e, 259, 1, le);
+    const planar = tiffOne(e, 284, 1, le);
+    if (compression !== 1 && compression !== 8 && compression !== 32946) {
+      throw new Error('Неподдерживаемое сжатие TIFF: ' + file.name);
+    }
+    if (bits !== 8 && bits !== 16 && bits !== 32) throw new Error('Нужны 8/16/32-битные каналы');
+    const step = Math.max(1, Math.ceil(Math.sqrt(W * H / TIFF_MAX_PIXELS)));
+    const outW = Math.ceil(W / step), outH = Math.ceil(H / step);
+    const bands = [];
+    for (let s = 0; s < samples; s++) bands.push(new Float32Array(outW * outH));
+
+    const tileW = tiffOne(e, 322, 0, le), tileH = tiffOne(e, 323, 0, le);
+    const tileOffsets = tiffTag(e, 324, le), tileCounts = tiffTag(e, 325, le);
+    const tiled = tileW > 0 && tileH > 0 && tileOffsets && tileOffsets.length;
+    const offsets = tiled ? tileOffsets : tiffTag(e, 273, le);
+    const counts = tiled ? tileCounts : tiffTag(e, 279, le);
+    if (!offsets || !counts || !offsets.length) throw new Error('В TIFF нет данных: ' + file.name);
+    const rowsPerStrip = tiled ? tileH : Math.max(1, tiffOne(e, 278, H, le));
+    const chunkW = tiled ? tileW : W;
+    const chunksAcross = tiled ? Math.ceil(W / tileW) : 1;
+    const totalChunks = tiled ? chunksAcross * Math.ceil(H / tileH) : Math.ceil(H / rowsPerStrip);
+    const bytesPerSample = bits / 8;
+
+    const decodeAt = (raw, index) => {
+      const q = index * bytesPerSample;
+      if (bits === 8) return raw[q];
+      const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+      if (bits === 16) return format === 2 ? view.getInt16(q, le) : view.getUint16(q, le);
+      if (format === 3) return view.getFloat32(q, le);
+      return format === 2 ? view.getInt32(q, le) : view.getUint32(q, le);
+    };
+
+    // Список чанков, которые реально попадают в прореженную сетку.
+    const needed = new Set();
+    for (let y = 0; y < outH; y++) {
+      const sy = y * step;
+      const cy = tiled ? Math.floor(sy / tileH) : Math.floor(sy / rowsPerStrip);
+      if (tiled) {
+        for (let x = 0; x < outW; x++) needed.add(cy * chunksAcross + Math.floor((x * step) / tileW));
+      } else needed.add(cy);
+    }
+    const sorted = Array.from(needed).sort((a, b) => a - b);
+    for (const ci of sorted) {
+      const planeCount = planar === 2 ? samples : 1;
+      for (let plane = 0; plane < planeCount; plane++) {
+        const idx = planar === 2 ? plane * totalChunks + ci : ci;
+        if (idx >= offsets.length || idx >= counts.length) continue;
+        let raw = await blobSlice(file, offsets[idx], counts[idx]);
+        if (compression === 8 || compression === 32946) raw = await inflateTiffBytes(raw);
+        const chunkY0 = tiled ? (Math.floor(ci / chunksAcross) * tileH) : (ci * rowsPerStrip);
+        const chunkX0 = tiled ? ((ci % chunksAcross) * tileW) : 0;
+        for (let y = 0; y < outH; y++) {
+          const sy = y * step;
+          const ly = sy - chunkY0;
+          if (ly < 0 || (tiled ? ly >= tileH : ly >= rowsPerStrip)) continue;
+          for (let x = 0; x < outW; x++) {
+            const sx = x * step;
+            const lx = sx - chunkX0;
+            if (lx < 0 || lx >= chunkW || sx >= W || sy >= H) continue;
+            const dest = y * outW + x;
+            if (planar === 2) {
+              const si = ly * chunkW + lx;
+              if ((si + 1) * bytesPerSample <= raw.length) bands[plane][dest] = decodeAt(raw, si);
+            } else {
+              const base = (ly * chunkW + lx) * samples;
+              for (let s = 0; s < samples; s++) {
+                if ((base + s + 1) * bytesPerSample <= raw.length) bands[s][dest] = decodeAt(raw, base + s);
+              }
+            }
+          }
+        }
+      }
+    }
+    return {name: file.name, W: outW, H: outH, samples, bands, sourceW: W, sourceH: H, step};
+  }
+
   function bandToRgb(band, W, H) {
     let lo = Infinity, hi = -Infinity;
     for (let i = 0; i < band.length; i++) {
@@ -286,6 +451,7 @@
       photo: photo.canvas.toDataURL('image/png'),
       mask: maskToPng(mask, W, H),
       width: W, height: H, water_pixels: water, threshold,
+      downsampled: !!raster.step && raster.step > 1,
       seed: {x: Math.round(sx / water), y: Math.round(sy / water)}
     };
   }
@@ -294,8 +460,9 @@
     const files = p.files || [];
     if (!files.length) return Promise.reject(new Error('Выберите TIFF-файл.'));
     const threshold = Number(p.threshold === undefined ? -0.25 : p.threshold);
-    return Promise.all(files.slice(0, 2).map((f) =>
-      parseTiffRaster(dataUrlToBytes(f.data), f.name || 'raster.tif')))
+    return Promise.all(files.slice(0, 2).map((f) => f.file
+      ? decodeTiffBlob(f.file)
+      : parseTiffRaster(dataUrlToBytes(f.data), f.name || 'raster.tif')))
       .then((parsed) => {
         const raster = parsed.length === 1
           ? parsed[0]
