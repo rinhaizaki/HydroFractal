@@ -474,7 +474,29 @@ def health():
 NDWI_MAX_PIXELS = 4_000_000
 
 
-def _ndwi_response(arrays, data):
+def _tiff_bbox(page):
+    """Географическая граница GeoTIFF как [west, south, east, north]."""
+    try:
+        tags = page.tags
+        if 34264 in tags:
+            m = [float(v) for v in tags[34264].value]
+            if len(m) >= 16 and m[0] and m[5]:
+                return [m[3], m[7] + page.imagelength * m[5],
+                        m[3] + page.imagewidth * m[0], m[7]]
+        if 33550 in tags and 33922 in tags:
+            sx, sy = float(tags[33550].value[0]), abs(float(tags[33550].value[1]))
+            tie = [float(v) for v in tags[33922].value]
+            west = tie[3] - tie[0] * sx
+            north = tie[4] + tie[1] * sy
+            if sx > 0 and sy > 0:
+                return [west, north - page.imagelength * sy,
+                        west + page.imagewidth * sx, north]
+    except Exception:
+        pass
+    return None
+
+
+def _ndwi_response(arrays, data, geo=None):
     """Общий расчёт NDWI и подготовка снимка/маски для одного или двух TIFF."""
     import tifffile  # noqa: F401  (используется вызывающими функциями)
     if not arrays:
@@ -531,6 +553,7 @@ def _ndwi_response(arrays, data):
         "mask": _encode_png(Image.fromarray((water.astype(np.uint8) * 255), "L")),
         "width": int(green.shape[1]), "height": int(green.shape[0]),
         "water_pixels": count, "threshold": threshold, "max": max_threshold,
+        "geo": geo,
         "seed": {"x": int(xs.mean()), "y": int(ys.mean())},
         "downsampled": step > 1
     })
@@ -546,11 +569,14 @@ def api_tiff_ndwi():
         if not files:
             raise ValueError("Выберите TIFF-файл.")
         arrays = []
-        for item in files:
+        geo = None
+        for index, item in enumerate(files):
             raw = _decode_data_url(item.get("data", ""))
             with tifffile.TiffFile(io.BytesIO(raw)) as tf:
                 arrays.append(np.asarray(tf.pages[0].asarray()))
-        return _ndwi_response(arrays, data)
+                if index == 0:
+                    geo = _tiff_bbox(tf.pages[0])
+        return _ndwi_response(arrays, data, geo)
     except ImportError:
         return jsonify({"ok": False, "error": "Для TIFF нужен tifffile (pip install tifffile)."}), 400
     except Exception as exc:
@@ -576,13 +602,16 @@ def api_tiff_ndwi_file():
         if not paths:
             raise ValueError("Выберите TIFF-файл.")
         arrays = [tifffile.memmap(path, mode="r") for path in paths]
+        geo = None
+        with tifffile.TiffFile(paths[0]) as tf:
+            geo = _tiff_bbox(tf.pages[0])
         data = {
             "green": request.form.get("green", 1),
             "nir": request.form.get("nir", 2),
             "threshold": request.form.get("threshold", -0.25),
             "max": request.form.get("max", 1)
         }
-        return _ndwi_response(arrays, data)
+        return _ndwi_response(arrays, data, geo)
     except ImportError:
         return jsonify({"ok": False, "error": "Для TIFF нужен tifffile (pip install tifffile)."}), 400
     except Exception as exc:

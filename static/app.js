@@ -30,6 +30,10 @@
     tiffNdwiMax: $('tiffNdwiMax'), tiffNdwiMaxValue: $('tiffNdwiMaxValue'),
     tiffNdwiMinNum: $('tiffNdwiMinNum'), tiffNdwiMaxNum: $('tiffNdwiMaxNum'),
     btnNdwiWater: $('btnNdwiWater'),
+    tiffSearchLat: $('tiffSearchLat'), tiffSearchLon: $('tiffSearchLon'),
+    btnTiffSearch: $('btnTiffSearch'), tiffSearchStatus: $('tiffSearchStatus'),
+    ndwiQuickMin: $('ndwiQuickMin'), ndwiQuickMax: $('ndwiQuickMax'),
+    ndwiQuickMinNum: $('ndwiQuickMinNum'), ndwiQuickMaxNum: $('ndwiQuickMaxNum'),
     mapCursor: $('mapCursor'), mapSearchLat: $('mapSearchLat'), mapSearchLon: $('mapSearchLon'),
     btnMapGo: $('btnMapGo'),
     demFile: $('demFile'), demStatus: $('demStatus'),
@@ -53,7 +57,7 @@
     zoom: 1, cx: 0, cy: 0, fit: 1,
     undo: [], redo: [], painting: false, panning: false, lastPaint: null, lastPointer: null,
     result: null, waterPixels: 0, waterShare: 0, minimapVisible: false, maskNonEmpty: false,
-    overlayDataURL: null, maskTouched: false, cropped: false, photoGeo: null,
+    overlayDataURL: null, maskTouched: false, cropped: false, photoGeo: null, tiffGeo: null,
     crop: { active: false, start: null, end: null, ready: false, handle: null, dragOrigin: null },
     photoMarks: [], photoMarkMode: false, photoMarkColor: '#5F0001',
     photoDrawings: [], photoDrawMode: false, photoDrawCurrent: null,
@@ -734,6 +738,10 @@
     const img = await loadImage(dataURL);
     S.image = img; S.baseDataURL = dataURL;
     S.W = img.naturalWidth; S.H = img.naturalHeight;
+    S.tiffGeo = S.photoGeo ? {bbox: S.photoGeo, W: S.W, H: S.H} : null;
+    if (el.tiffSearchStatus) {
+      el.tiffSearchStatus.textContent = S.tiffGeo ? 'GeoTIFF с геопривязкой загружен' : 'GeoTIFF не загружен';
+    }
     S.sourceName = name || 'screenshot.png';
     initMask(S.W, S.H);
     S.crop.active = false; S.crop.start = S.crop.end = null;
@@ -771,27 +779,70 @@
   function ndwiLabel() {
     return 'NDWI ' + ndwiFmt(el.tiffNdwiThreshold.value) + ' … ' + ndwiFmt(el.tiffNdwiMax.value);
   }
+  function setNdwiNumber(input, value) {
+    if (input && document.activeElement !== input) input.value = value.toFixed(2);
+  }
   function syncNdwiLabels() {
     const lo = Number(el.tiffNdwiThreshold.value) / 100;
     const hi = Number(el.tiffNdwiMax.value) / 100;
-    if (el.tiffNdwiMinNum && document.activeElement !== el.tiffNdwiMinNum) {
-      el.tiffNdwiMinNum.value = lo.toFixed(2);
-    }
-    if (el.tiffNdwiMaxNum && document.activeElement !== el.tiffNdwiMaxNum) {
-      el.tiffNdwiMaxNum.value = hi.toFixed(2);
-    }
+    setNdwiNumber(el.tiffNdwiMinNum, lo);
+    setNdwiNumber(el.tiffNdwiMaxNum, hi);
+    setNdwiNumber(el.ndwiQuickMinNum, lo);
+    setNdwiNumber(el.ndwiQuickMaxNum, hi);
+    if (el.ndwiQuickMin) el.ndwiQuickMin.value = el.tiffNdwiThreshold.value;
+    if (el.ndwiQuickMax) el.ndwiQuickMax.value = el.tiffNdwiMax.value;
     el.tiffNdwiValue.textContent = ndwiLabel();
     el.tiffNdwiMaxValue.textContent = '≤ ' + ndwiFmt(el.tiffNdwiMax.value);
   }
-  function syncNdwiFromNumbers() {
-    if (!el.tiffNdwiMinNum || !el.tiffNdwiMaxNum) return;
-    const lo = Number(el.tiffNdwiMinNum.value);
-    const hi = Number(el.tiffNdwiMaxNum.value);
+  function setNdwiRange(lo, hi) {
     if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
     el.tiffNdwiThreshold.value = String(Math.round(Math.max(-100, Math.min(100, lo * 100))));
     el.tiffNdwiMax.value = String(Math.round(Math.max(-100, Math.min(100, hi * 100))));
     syncNdwiLabels();
   }
+  function ndwiRange() {
+    return [Number(el.tiffNdwiThreshold.value) / 100, Number(el.tiffNdwiMax.value) / 100];
+  }
+  function onNdwiNumberInput(e) {
+    const [lo, hi] = ndwiRange();
+    const v = Number(e.target.value);
+    if (!Number.isFinite(v)) return;
+    const bound = e.target.dataset.ndwiBound;
+    if (bound === 'min') setNdwiRange(v, hi);
+    else if (bound === 'max') setNdwiRange(lo, v);
+  }
+
+  function searchTiffCoords() {
+    const g = S.tiffGeo;
+    if (!g || !g.bbox) {
+      status('У загруженного TIFF нет геопривязки — поиск по координатам недоступен.', true);
+      toast('В TIFF нет геопривязки'); return;
+    }
+    if (!S.image) { status('Сначала загрузите TIFF через NDWI.', true); return; }
+    const lat = Number(el.tiffSearchLat.value), lon = Number(el.tiffSearchLon.value);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      status('Введите число для координаты Y и для координаты X.', true); return;
+    }
+    const [w, south, east, north] = g.bbox;
+    if (!(east > w && north > south)) { status('Геопривязка TIFF некорректна.', true); return; }
+    if (lon < w || lon > east || lat < south || lat > north) {
+      status(`Точка вне TIFF: Y ${fmt(south, 3)}…${fmt(north, 3)}, X ${fmt(w, 3)}…${fmt(east, 3)}.`, true);
+      return;
+    }
+    const x = (lon - w) / (east - w) * g.W;
+    const y = (north - lat) / (north - south) * g.H;
+    S.zoom = Math.max(S.zoom, 2);
+    S.cx = x; S.cy = y;
+    clampView(); renderPhoto();
+    S.photoMarks.push({x, y, label: `Координаты ${lat}, ${lon}`,
+      color: '#00A6D6'});
+    renderPhotoMarksList();
+    el.tiffSearchStatus.textContent = `найдено: px ${Math.round(x)}, ${Math.round(y)}`;
+    status(`Точка Y=${fmt(lat, 5)} / X=${fmt(lon, 5)} найдена в TIFF: px ${Math.round(x)}, ${Math.round(y)}. ` +
+      'На снимке поставлена метка, вид приближен.');
+    toast('Точка найдена в TIFF');
+  }
+
   function activateRibbon(key) {
     const ribbon = document.querySelector('.toolbars.ribbon');
     if (!ribbon) return;
@@ -829,7 +880,7 @@
         Object.keys(extra).forEach((k) => form.append(k, String(extra[k])));
         resp = await postForm('/api/tiff/ndwi/file', form);
       }
-      await showPhoto(resp.photo, 'TIFF → NDWI');
+      await showPhoto(resp.photo, 'TIFF → NDWI', {photoGeo: resp.geo});
       await setMaskFromDataURL(resp.mask);
       S.seed = resp.seed || null;
       S.waterPixels = resp.water_pixels;
@@ -2202,10 +2253,22 @@
     $('btnSegment').addEventListener('click', segment);
     $('btnAnalyze').addEventListener('click', analyze);
     $('btnTiffNdwi').addEventListener('click', () => tiffToPhoto());
+    el.btnTiffSearch.addEventListener('click', searchTiffCoords);
+    [el.tiffSearchLat, el.tiffSearchLon].forEach((input) => {
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') searchTiffCoords(); });
+    });
     el.tiffNdwiThreshold.addEventListener('input', syncNdwiLabels);
     el.tiffNdwiMax.addEventListener('input', syncNdwiLabels);
-    [el.tiffNdwiMinNum, el.tiffNdwiMaxNum].forEach((input) => {
-      if (input) input.addEventListener('input', syncNdwiFromNumbers);
+    [el.ndwiQuickMin, el.ndwiQuickMax].forEach((input) => {
+      if (!input) return;
+      input.addEventListener('input', () => {
+        if (input === el.ndwiQuickMin) el.tiffNdwiThreshold.value = input.value;
+        else el.tiffNdwiMax.value = input.value;
+        syncNdwiLabels();
+      });
+    });
+    document.querySelectorAll('input[data-ndwi-bound]').forEach((input) => {
+      input.addEventListener('input', onNdwiNumberInput);
     });
     syncNdwiLabels();
     el.tiffFile.addEventListener('change', () => {
@@ -2783,7 +2846,10 @@
         <li>Для выделения реки по створу сначала поставьте точку «🖱 Точка расхода»
           кликом по руслу, затем нажмите «🌊 Выделить реку (по створу)».</li>
         <li>Для выделения воды по NDWI загрузите TIFF и нажмите отдельную кнопку
-          «💧 Выделить воду по NDWI». Диапазон NDWI редактируется двумя ползунками
+          «💧 Выделить воду по NDWI». В ленте «Ориентация, обрезка, сетка и масштаб»
+          есть поиск по координатам: введите Y и X в системе координат GeoTIFF
+          (градусы или метры) и нажмите «🔎 Найти в TIFF» — точка будет отмечена на снимке.
+          Диапазон NDWI редактируется двумя ползунками
           или полями значений от −1 до +1 (по умолчанию −0,25 … +1,00).
           Кнопка готовит только маску воды; D считается отдельно кнопкой «📐 Рассчитать D».</li>
         <li>Маску и створ можно поправить вручную, затем нажать «📐 Рассчитать D».</li>
@@ -3077,6 +3143,9 @@ N(ε) на малых размерах ячеек и завышают D.
     mapSearchLat: 'Широта точки в градусах (−85…85). Кнопка «Перейти» центрирует карту без запуска расчётов.',
     mapSearchLon: 'Долгота точки в градусах (−180…180). Кнопка «Перейти» центрирует карту без запуска расчётов.',
     btnMapGo: 'Центрировать карту на введённых координатах.',
+    tiffSearchLat: 'Координата Y для поиска в TIFF: широта в градусах или northing в метрах — как в геотегах файла.',
+    tiffSearchLon: 'Координата X для поиска в TIFF: долгота в градусах или easting в метрах — как в геотегах файла.',
+    btnTiffSearch: 'Найти точку по координатам в загруженном GeoTIFF и приблизить снимок.',
     ndwiThreshold: 'Порог NDWI от −1 до +1 включительно. Вода учитывается при NDWI ≥ порога (по умолчанию −0,25).',
     mapRelief: 'Включить полупрозрачную отмывку рельефа (Esri / USGS Shaded Relief) поверх текущей подложки — изменение видно сразу.',
     mapMarkText: 'Подпись для следующей метки на карте. Оставьте пустым — будет автоматическая нумерация.',

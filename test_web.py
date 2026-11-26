@@ -75,7 +75,9 @@ def test_tiff_ndwi_upload():
     nir[15:45, 20:60] = 40
     rgb = np.stack([green // 2, green, nir], axis=2)
     bio = io.BytesIO()
-    tifffile.imwrite(bio, rgb)
+    tags = [(33550, 'd', 3, (30.0, 30.0, 0.0), False),
+            (33922, 'd', 6, (0.0, 0.0, 0.0, 300000.0, 6000000.0, 0.0), False)]
+    tifffile.imwrite(bio, rgb, extratags=tags)
     data = "data:image/tiff;base64," + base64.b64encode(bio.getvalue()).decode("ascii")
 
     resp = client.post("/api/tiff/ndwi", json={
@@ -89,6 +91,7 @@ def test_tiff_ndwi_upload():
     assert resp.json["mask"].startswith("data:image/png")
     assert 20 <= resp.json["seed"]["x"] <= 60
     assert resp.json["max"] == 0.9
+    assert resp.json["geo"] == [300000.0, 6000000.0 - 60 * 30, 300000.0 + 80 * 30, 6000000.0]
 
     # Потоковая загрузка больших файлов: multipart вместо base64.
     streamed = client.post("/api/tiff/ndwi/file", data={
