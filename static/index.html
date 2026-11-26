@@ -167,14 +167,34 @@
     </div>
     </details>
         </div>
+        <div class="ribbon-panel" data-ribbon-panel="photo-ndwi" role="tabpanel">
+          <div class="toolbar">
+      <label class="field-label" for="tiffFile">TIFF с водой:</label>
+      <input type="file" id="tiffFile" accept=".tif,.tiff,image/tiff" multiple title="Один многоканальный TIFF или два файла — зелёный и NIR">
+      <label class="field-label" for="tiffGreen">Зелёный канал</label>
+      <input type="number" id="tiffGreen" class="num" value="1" min="1" step="1" title="Номер зелёного канала в TIFF, начиная с 1">
+      <label class="field-label" for="tiffNir">NIR-канал</label>
+      <input type="number" id="tiffNir" class="num" value="2" min="1" step="1" title="Номер ближнего инфракрасного канала в TIFF, начиная с 1">
+      <button class="btn accent" id="btnTiffNdwi" title="Прочитать TIFF и выделить воду по NDWI (без расчёта D)">💧 Выделить воду по NDWI</button>
+      <label class="field-label" for="tiffNdwiThreshold">Диапазон NDWI:</label>
+      <input type="range" id="tiffNdwiThreshold" class="range short" min="-100" max="100" value="-25" step="1" title="Нижняя граница NDWI: от −1 до +1, по умолчанию −0,25">
+      <input type="number" id="tiffNdwiMinNum" class="num" value="-0.25" min="-1" max="1" step="0.01" title="Точное значение нижней границы NDWI">
+      <span class="field-label" id="tiffNdwiValue">NDWI ≥ −0,25</span>
+      <input type="range" id="tiffNdwiMax" class="range short" min="-100" max="100" value="100" step="1" title="Верхняя граница NDWI: от −1 до +1, по умолчанию +1,00">
+      <input type="number" id="tiffNdwiMaxNum" class="num" value="1" min="-1" max="1" step="0.01" title="Точное значение верхней границы NDWI">
+      <span class="field-label" id="tiffNdwiMaxValue">≤ +1,00</span>
+      <a class="btn small" href="https://earthexplorer.usgs.gov/" target="_blank" rel="noopener noreferrer" title="Архив USGS EarthExplorer — оттуда можно скачать ЦМР модель (DEM)">🌐 EarthExplorer — скачать ЦМР</a>
+          </div>
+        </div>
     </div>
   </div>
 
       <div class="workspace">
         <div class="work-left">
           <div class="action-row">
-            <button class="btn accent" id="btnSegment" title="Выделить воду по цвету точки расхода">🌊 Выделить реку</button>
-            <button class="btn accent" id="btnAnalyze" title="Рассчитать фрактальную размерность D по маске">📐 Рассчитать D</button>
+            <button class="btn accent" id="btnSegment" title="Выделить реку по цвету точки-створа: сначала нажмите на створ кликом по руслу">🌊 Выделить реку (по створу)</button>
+            <button class="btn accent" id="btnNdwiWater" title="Выделить воду по NDWI из загруженного TIFF; диапазон NDWI задаётся в ленте «TIFF и NDWI»">💧 Выделить воду по NDWI</button>
+            <button class="btn accent" id="btnAnalyze" title="Рассчитать фрактальную размерность D по текущей маске">📐 Рассчитать D</button>
             <input type="text" id="photoMarkLabel" class="mark-label" placeholder="Подпись метки" size="14" title="Подпись для следующей метки">
             <input type="color" id="photoMarkColor" value="#5F0001" title="Цвет меток и рисунков-заметок">
             <button class="btn small" id="btnPhotoDrawFree" title="Рисовать цветные заметки, привязанные к пикселям снимка">✏ Рисовать</button>
@@ -229,7 +249,7 @@
 Порядок действий:
   1) Загрузите спутниковый снимок реки.
   2) Отметьте ЛКМ точку на реке — створ, данные по которому вас интересуют.
-  3) Нажмите «Выделить реку» и при необходимости поправьте маску.
+  3) Нажмите «Выделить реку (по створу)» или «Выделить воду по NDWI».
   4) ВАЖНО: сотрите ластиком ВСЁ, что ниже по течению от створа.
   5) Нажмите «Рассчитать D».
   6) Нажмите «Сохранить отчёт (PDF)».</pre>
@@ -248,23 +268,7 @@
           </details>
         </aside>
       </div>
-        <div class="ribbon-panel" data-ribbon-panel="photo-ndwi" role="tabpanel">
-          <div class="toolbar">
-      <label class="field-label" for="tiffFile">TIFF с водой:</label>
-      <input type="file" id="tiffFile" accept=".tif,.tiff,image/tiff" multiple title="Один многоканальный TIFF или два файла — зелёный и NIR">
-      <label class="field-label" for="tiffGreen">Зелёный канал</label>
-      <input type="number" id="tiffGreen" class="num" value="1" min="1" step="1" title="Номер зелёного канала в TIFF, начиная с 1">
-      <label class="field-label" for="tiffNir">NIR-канал</label>
-      <input type="number" id="tiffNir" class="num" value="2" min="1" step="1" title="Номер ближнего инфракрасного канала в TIFF, начиная с 1">
-      <button class="btn accent" id="btnTiffNdwi" title="Прочитать TIFF, выделить воду по NDWI и рассчитать D">💧 Выделить воду по NDWI</button>
-      <label class="field-label" for="tiffNdwiThreshold">Диапазон NDWI:</label>
-      <input type="range" id="tiffNdwiThreshold" class="range short" min="-100" max="100" value="-25" step="1" title="Нижняя граница NDWI: от −1 до +1, по умолчанию −0,25">
-      <span class="field-label" id="tiffNdwiValue">NDWI ≥ −0,25</span>
-      <input type="range" id="tiffNdwiMax" class="range short" min="-100" max="100" value="100" step="1" title="Верхняя граница NDWI: от −1 до +1, по умолчанию +1,00">
-      <span class="field-label" id="tiffNdwiMaxValue">≤ +1,00</span>
-      <a class="btn small" href="https://earthexplorer.usgs.gov/" target="_blank" rel="noopener noreferrer" title="Архив USGS EarthExplorer — оттуда можно скачать ЦМР модель (DEM)">🌐 EarthExplorer — скачать ЦМР</a>
-          </div>
-        </div>
+
     </section>
 
     <!-- ---------- вкладка «Карта»: только просмотр ---------- -->
@@ -384,6 +388,6 @@
 <script src="vendor/leaflet/leaflet.js?v=1"></script>
 <script src="vendor/geotiff.js?v=1"></script>
 <script src="client-core.js?v=22"></script>
-<script src="app.js?v=26"></script>
+<script src="app.js?v=27"></script>
 </body>
 </html>
