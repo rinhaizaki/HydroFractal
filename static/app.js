@@ -28,6 +28,8 @@
     tiffFile: $('tiffFile'), tiffGreen: $('tiffGreen'), tiffNir: $('tiffNir'),
     tiffNdwiThreshold: $('tiffNdwiThreshold'), tiffNdwiValue: $('tiffNdwiValue'),
     tiffNdwiMax: $('tiffNdwiMax'), tiffNdwiMaxValue: $('tiffNdwiMaxValue'),
+    tiffNdwiMinNum: $('tiffNdwiMinNum'), tiffNdwiMaxNum: $('tiffNdwiMaxNum'),
+    btnNdwiWater: $('btnNdwiWater'),
     mapCursor: $('mapCursor'), mapSearchLat: $('mapSearchLat'), mapSearchLon: $('mapSearchLon'),
     btnMapGo: $('btnMapGo'),
     demFile: $('demFile'), demStatus: $('demStatus'),
@@ -769,6 +771,40 @@
   function ndwiLabel() {
     return 'NDWI ' + ndwiFmt(el.tiffNdwiThreshold.value) + ' … ' + ndwiFmt(el.tiffNdwiMax.value);
   }
+  function syncNdwiLabels() {
+    const lo = Number(el.tiffNdwiThreshold.value) / 100;
+    const hi = Number(el.tiffNdwiMax.value) / 100;
+    if (el.tiffNdwiMinNum && document.activeElement !== el.tiffNdwiMinNum) {
+      el.tiffNdwiMinNum.value = lo.toFixed(2);
+    }
+    if (el.tiffNdwiMaxNum && document.activeElement !== el.tiffNdwiMaxNum) {
+      el.tiffNdwiMaxNum.value = hi.toFixed(2);
+    }
+    el.tiffNdwiValue.textContent = ndwiLabel();
+    el.tiffNdwiMaxValue.textContent = '≤ ' + ndwiFmt(el.tiffNdwiMax.value);
+  }
+  function syncNdwiFromNumbers() {
+    if (!el.tiffNdwiMinNum || !el.tiffNdwiMaxNum) return;
+    const lo = Number(el.tiffNdwiMinNum.value);
+    const hi = Number(el.tiffNdwiMaxNum.value);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
+    el.tiffNdwiThreshold.value = String(Math.round(Math.max(-100, Math.min(100, lo * 100))));
+    el.tiffNdwiMax.value = String(Math.round(Math.max(-100, Math.min(100, hi * 100))));
+    syncNdwiLabels();
+  }
+  function activateRibbon(key) {
+    const ribbon = document.querySelector('.toolbars.ribbon');
+    if (!ribbon) return;
+    ribbon.querySelectorAll('.ribbon-tab').forEach((tab) => {
+      const on = tab.dataset.ribbonTab === key;
+      tab.classList.toggle('active', on);
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    ribbon.querySelectorAll('.ribbon-panel').forEach((panel) => {
+      panel.classList.toggle('active', panel.dataset.ribbonPanel === key);
+    });
+  }
+
   async function tiffToPhoto(overrideFiles) {
     const files = overrideFiles ? Array.from(overrideFiles) : Array.from(el.tiffFile.files || []);
     if (!files.length) { toast('Выберите TIFF-файл.'); return; }
@@ -801,19 +837,14 @@
       S.maskTouched = false;
       S.cropped = false;
       renderPhoto();
-      const r = await api('/api/analyze', {
-        mask: maskForApi(), object: $('object').value,
-        max_divs: Number($('maxDivsNum').value)
-      });
-      S.result = r.result;
-      showResult(S.result);
-      setBadge('resultBadge', 'готово', 'ok');
+      S.result = null;
+      setBadge('resultBadge', 'ожидание');
       status(`NDWI ${ndwiFmt(Math.round(100 * resp.threshold))} … ` +
         `${ndwiFmt(Math.round(100 * (resp.max === undefined ? 1 : resp.max)))}: вода ` +
         `${fmt(resp.water_pixels, 0)} px из ${fmt(resp.width, 0)}×${fmt(resp.height, 0)}. ` +
-        `D по выделенной воде = ${fmt(S.result.D, 4)}.` +
+        `Маска готова — нажмите «📐 Рассчитать D».` +
         (resp.downsampled ? ' Большой TIFF прочитан по уменьшенной сетке.' : ''));
-      toast('Вода по NDWI выделена');
+      toast('Вода по NDWI выделена — нажмите «Рассчитать D»');
     } catch (e) {
       const msg = e && e.message ? e.message : String(e);
       const hint = /канал|NDWI|воды|IZ|TIFF/i.test(msg)
@@ -826,7 +857,7 @@
   // ---------------------------------------------------------- вычисления фото
   async function segment() {
     if (!S.image) { toast('Сначала загрузите снимок.'); return; }
-    if (!S.seed) { status('Сначала отметьте точку на реке — инструмент «Точка расхода».', true); toast('Отметьте точку на реке'); return; }
+    if (!S.seed) { status('Сначала нажмите створ: выберите инструмент «Точка расхода» и кликните по руслу.', true); toast('Сначала поставьте створ'); return; }
     busy(true, 'Выделение водной поверхности…');
     try {
       const resp = await api('/api/segment', {
@@ -2171,10 +2202,26 @@
     $('btnSegment').addEventListener('click', segment);
     $('btnAnalyze').addEventListener('click', analyze);
     $('btnTiffNdwi').addEventListener('click', () => tiffToPhoto());
-    el.tiffNdwiThreshold.addEventListener('input', () => { el.tiffNdwiValue.textContent = ndwiLabel(); });
-    el.tiffNdwiMax.addEventListener('input', () => { el.tiffNdwiMaxValue.textContent = '≤ ' + ndwiFmt(el.tiffNdwiMax.value); });
-    el.tiffNdwiValue.textContent = ndwiLabel();
-    el.tiffNdwiMaxValue.textContent = '≤ ' + ndwiFmt(el.tiffNdwiMax.value);
+    el.tiffNdwiThreshold.addEventListener('input', syncNdwiLabels);
+    el.tiffNdwiMax.addEventListener('input', syncNdwiLabels);
+    [el.tiffNdwiMinNum, el.tiffNdwiMaxNum].forEach((input) => {
+      if (input) input.addEventListener('input', syncNdwiFromNumbers);
+    });
+    syncNdwiLabels();
+    el.tiffFile.addEventListener('change', () => {
+      if (el.tiffFile.dataset.autoNdwi === '1') {
+        el.tiffFile.dataset.autoNdwi = '0';
+        if (el.tiffFile.files && el.tiffFile.files[0]) tiffToPhoto();
+      }
+    });
+    el.btnNdwiWater.addEventListener('click', () => {
+      const files = el.tiffFile.files || [];
+      if (files.length) { tiffToPhoto(); return; }
+      activateRibbon('photo-ndwi');
+      el.tiffFile.dataset.autoNdwi = '1';
+      status('Выберите TIFF с зелёным и NIR-каналами — выделение по NDWI запустится сразу.');
+      el.tiffFile.click();
+    });
     $('btnSaveMask').addEventListener('click', saveMask);
     $('btnSaveReport').addEventListener('click', saveReport);
     $('btnUndo').addEventListener('click', undo);
@@ -2298,7 +2345,7 @@
         else { S.seed = { x: pt.x, y: pt.y }; S.colorPoints = []; }
         renderPhoto();
         status(S.tool === 'point'
-          ? `Створ: x=${Math.round(pt.x)}, y=${Math.round(pt.y)}. Нажмите «Выделить реку».`
+          ? `Створ: x=${Math.round(pt.x)}, y=${Math.round(pt.y)}. Нажмите «Выделить реку (по створу)».`
           : `Добавлена точка эталона цвета: x=${Math.round(pt.x)}, y=${Math.round(pt.y)}.`);
       }
     });
@@ -2733,10 +2780,12 @@
         <li>Поля «Зелёный канал» и «NIR-канал» задают номера каналов в TIFF,
           начиная с 1. Для двух файлов каналы берутся по порядку: первый — зелёный,
           второй — NIR.</li>
-        <li>Диапазон NDWI задаётся двумя ползунками от −1 до +1: нижняя граница
-          по умолчанию −0,25, верхняя +1,00. К воде относятся значения внутри
-          диапазона. Нажмите «💧 Выделить воду по NDWI» — приложение подготовит
-          снимок и маску воды и сразу рассчитает D и характеристики стока.</li>
+        <li>Для выделения реки по створу сначала поставьте точку «🖱 Точка расхода»
+          кликом по руслу, затем нажмите «🌊 Выделить реку (по створу)».</li>
+        <li>Для выделения воды по NDWI загрузите TIFF и нажмите отдельную кнопку
+          «💧 Выделить воду по NDWI». Диапазон NDWI редактируется двумя ползунками
+          или полями значений от −1 до +1 (по умолчанию −0,25 … +1,00).
+          Кнопка готовит только маску воды; D считается отдельно кнопкой «📐 Рассчитать D».</li>
         <li>Маску и створ можно поправить вручную, затем нажать «📐 Рассчитать D».</li>
         <li>Вкладка «🗺 Карта» — просмотр подложки и ЦМР: панорамирование, масштаб,
           мини-карта. Расчётов там нет.</li>
