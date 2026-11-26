@@ -495,13 +495,16 @@ def _ndwi_response(arrays, data):
     green_idx = int(data.get("green", 1)) if len(arrays) == 1 else 1
     nir_idx = int(data.get("nir", 2)) if len(arrays) == 1 else 2
     threshold = float(data.get("threshold", -0.25))
+    max_threshold = float(data.get("max", 1))
+    if threshold > max_threshold:
+        raise ValueError("NDWI: нижняя граница должна быть не больше верхней.")
     step = max(1, math.ceil(math.sqrt(H * W / NDWI_MAX_PIXELS)))
     green = np.asarray(band(green_idx)[::step, ::step], dtype=np.float32)
     nir = np.asarray(band(nir_idx)[::step, ::step], dtype=np.float32)
     denom = green + nir
     with np.errstate(divide="ignore", invalid="ignore"):
         ndwi = np.where(denom > 0, (green - nir) / denom, np.nan)
-    water = np.isfinite(ndwi) & (ndwi >= threshold)
+    water = np.isfinite(ndwi) & (ndwi >= threshold) & (ndwi <= max_threshold)
     count = int(water.sum())
     if not count:
         raise ValueError("Вода по NDWI не найдена — проверьте каналы и порог.")
@@ -527,7 +530,7 @@ def _ndwi_response(arrays, data):
         "photo": _encode_png(Image.fromarray(rgb, "RGB")),
         "mask": _encode_png(Image.fromarray((water.astype(np.uint8) * 255), "L")),
         "width": int(green.shape[1]), "height": int(green.shape[0]),
-        "water_pixels": count, "threshold": threshold,
+        "water_pixels": count, "threshold": threshold, "max": max_threshold,
         "seed": {"x": int(xs.mean()), "y": int(ys.mean())},
         "downsampled": step > 1
     })
@@ -576,7 +579,8 @@ def api_tiff_ndwi_file():
         data = {
             "green": request.form.get("green", 1),
             "nir": request.form.get("nir", 2),
-            "threshold": request.form.get("threshold", -0.25)
+            "threshold": request.form.get("threshold", -0.25),
+            "max": request.form.get("max", 1)
         }
         return _ndwi_response(arrays, data)
     except ImportError:

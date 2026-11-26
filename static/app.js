@@ -27,6 +27,9 @@
     ndwiThreshold: $('ndwiThreshold'), mapViewMode: $('mapViewMode'),
     tiffFile: $('tiffFile'), tiffGreen: $('tiffGreen'), tiffNir: $('tiffNir'),
     tiffNdwiThreshold: $('tiffNdwiThreshold'), tiffNdwiValue: $('tiffNdwiValue'),
+    tiffNdwiMax: $('tiffNdwiMax'), tiffNdwiMaxValue: $('tiffNdwiMaxValue'),
+    mapCursor: $('mapCursor'), mapSearchLat: $('mapSearchLat'), mapSearchLon: $('mapSearchLon'),
+    btnMapGo: $('btnMapGo'),
     demFile: $('demFile'), demStatus: $('demStatus'),
     btnDemShow: $('btnDemShow'), btnDemClear: $('btnDemClear'),
     leafletWrap: $('leafletMap'),
@@ -69,7 +72,7 @@
       drawings: [], drawMode: false, drawCurrent: null, drawLayer: null, drawColor: '#5F0001',
       leafletCredit: 'Sentinel-2 L2A: Copernicus / Planetary Computer',
       overlayGeo: null, reliefGeo: null, moveTimer: null,
-      demLayer: null, demInfo: null
+      demLayer: null, demInfo: null, reliefLayer: null
     }
   };
 
@@ -338,7 +341,7 @@
     const box = $('photoMarksList');
     if (!box) return;
     if (!S.photoMarks.length) {
-      box.innerHTML = '<div class="note">Меток на фото пока нет. Включите «Метка на фото» ' +
+      box.innerHTML = '<div class="note">Меток пока нет. Включите «Метка» ' +
         'и кликните по снимку — метка появится в этом списке.</div>';
       return;
     }
@@ -346,11 +349,11 @@
       <div class="mark-row" data-photo-mark="${i}">
         <span class="mark-num">M${i + 1}.</span>
         <input type="color" class="mark-color" value="${m.color || '#5F0001'}" title="Цвет метки M${i + 1}" aria-label="Цвет метки M${i + 1}">
-        <input type="text" class="mark-name" value="${escHtml(m.label)}" aria-label="Название метки ${i + 1}">
+        <input type="text" class="mark-name" value="${escHtml(m.label)}" title="Название метки M${i + 1}" aria-label="Название метки ${i + 1}">
         <span class="mark-coord">x=${Math.round(m.x)}, y=${Math.round(m.y)} px</span>
-        <button class="btn small" data-mark-act="rename">Сохранить</button>
-        <button class="btn small" data-mark-act="goto">К точке</button>
-        <button class="btn small" data-mark-act="delete">Удалить</button>
+        <button class="btn small" data-mark-act="rename" title="Сохранить новое название метки">Сохранить</button>
+        <button class="btn small" data-mark-act="goto" title="Перейти к этой метке на снимке">К точке</button>
+        <button class="btn small" data-mark-act="delete" title="Удалить эту метку">Удалить</button>
       </div>`).join('');
   }
   function addPhotoMark(pt) {
@@ -358,15 +361,15 @@
     S.photoMarks.push({ x: pt.x, y: pt.y, label, color: S.photoMarkColor });
     $('photoMarkLabel').value = '';
     renderPhotoMarksList(); renderPhoto();
-    status(`Метка на фото «${label}»: x=${Math.round(pt.x)}, y=${Math.round(pt.y)} px.`);
+    status(`Метка «${label}»: x=${Math.round(pt.x)}, y=${Math.round(pt.y)} px.`);
   }
   function togglePhotoMark() {
     S.photoMarkColor = ($('photoMarkColor') && $('photoMarkColor').value) || S.photoMarkColor;
     S.photoMarkMode = !S.photoMarkMode;
     $('btnPhotoMark').classList.toggle('selected-accent', S.photoMarkMode);
     status(S.photoMarkMode
-      ? 'Метки на фото: кликайте по снимку, чтобы поставить метку.'
-      : 'Режим меток на фото выключен.');
+      ? 'Метки: кликайте по снимку, чтобы поставить метку.'
+      : 'Режим меток выключен.');
   }
   function drawPhotoAnnotations(ctx, t) {
     const lines = S.photoDrawCurrent
@@ -759,8 +762,12 @@
   }
 
   // ---------------------------------------------------------- TIFF → NDWI → фото
+  function ndwiFmt(v) {
+    const n = Number(v) / 100;
+    return (n >= 0 ? '+' : '') + n.toFixed(2).replace('.', ',');
+  }
   function ndwiLabel() {
-    return 'NDWI ≥ ' + (Number(el.tiffNdwiThreshold.value) / 100).toFixed(2).replace('.', ',');
+    return 'NDWI ' + ndwiFmt(el.tiffNdwiThreshold.value) + ' … ' + ndwiFmt(el.tiffNdwiMax.value);
   }
   async function tiffToPhoto(overrideFiles) {
     const files = overrideFiles ? Array.from(overrideFiles) : Array.from(el.tiffFile.files || []);
@@ -768,9 +775,12 @@
     if (files.length > 2) { toast('Нужно один многоканальный TIFF или два файла: зелёный и NIR.'); return; }
     busy(true, 'Читаем TIFF потоком и считаем NDWI…');
     try {
+      const lo = Number(el.tiffNdwiThreshold.value) / 100;
+      const hi = Number(el.tiffNdwiMax.value) / 100;
+      if (lo > hi) throw new Error('NDWI: нижняя граница должна быть не больше верхней.');
       const extra = {green: Number(el.tiffGreen.value) || 1,
         nir: Number(el.tiffNir.value) || 2,
-        threshold: Number(el.tiffNdwiThreshold.value) / 100};
+        threshold: lo, max: hi};
       let resp;
       if (STATIC_MODE) {
         // Большие TIFF не кодируем в base64: client-core читает File по частям.
@@ -798,7 +808,8 @@
       S.result = r.result;
       showResult(S.result);
       setBadge('resultBadge', 'готово', 'ok');
-      status(`NDWI ≥ ${(resp.threshold).toFixed(2).replace('.', ',')}: вода ` +
+      status(`NDWI ${ndwiFmt(Math.round(100 * resp.threshold))} … ` +
+        `${ndwiFmt(Math.round(100 * (resp.max === undefined ? 1 : resp.max)))}: вода ` +
         `${fmt(resp.water_pixels, 0)} px из ${fmt(resp.width, 0)}×${fmt(resp.height, 0)}. ` +
         `D по выделенной воде = ${fmt(S.result.D, 4)}.` +
         (resp.downsampled ? ' Большой TIFF прочитан по уменьшенной сетке.' : ''));
@@ -942,7 +953,7 @@
         ['Допуск по цвету', $('tolNum').value],
         ['Точка створа', S.seed ? `x=${Math.round(S.seed.x)}, y=${Math.round(S.seed.y)}` : 'не задана'],
         ['Доп. точки цвета', String(S.colorPoints.length)],
-        ['Метки на фото', S.photoMarks.map((m) => `${m.label} (${Math.round(m.x)}, ${Math.round(m.y)})`).join('; ') || 'нет'],
+        ['Метки', S.photoMarks.map((m) => `${m.label} (${Math.round(m.x)}, ${Math.round(m.y)})`).join('; ') || 'нет'],
         ['Объект расчёта', $('object').selectedOptions[0].text],
         ['Число делений сетки', $('maxDivsNum').value],
         ['Пикселей воды', String(S.waterPixels)],
@@ -1074,6 +1085,22 @@
     const c = tileXY(lon, lat, z);
     return { x0: c.x - w / (2 * 256), y0: c.y - h / (2 * 256), z, w, h };
   }
+  const RELIEF_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}';
+
+  function syncReliefLayer() {
+    if (!S.map.leaflet || !window.L || !L.tileLayer) return;
+    if (S.map.reliefLayer) {
+      S.map.leaflet.removeLayer(S.map.reliefLayer);
+      S.map.reliefLayer = null;
+    }
+    if (!S.map.relief) return;
+    S.map.reliefLayer = L.tileLayer(RELIEF_URL, {
+      opacity: 0.55, maxZoom: 13, minZoom: 2,
+      attribution: 'Отмывка рельефа: Esri / USGS Shaded Relief'
+    });
+    S.map.reliefLayer.addTo(S.map.leaflet);
+  }
+
   function setLeafletLayer(index) {
     if (!S.map.leaflet || !window.L) return;
     const list = LEAFLET_SOURCES[S.map.source] || LEAFLET_SOURCES.esri;
@@ -1097,6 +1124,7 @@
     });
     S.map.tileLayer.addTo(S.map.leaflet);
     S.map.leafletCredit = src.credit;
+    syncReliefLayer();
     applyMapViewMode();
   }
   // ------------------------------------------------ Sentinel-2 / NDWI (ГИС-слой)
@@ -1341,6 +1369,11 @@
         S.map.drawCurrent = [{ lat: e.latlng.lat, lon: e.latlng.lng }];
       });
       map.on('mousemove', (e) => {
+        if (el.mapCursor) {
+          el.mapCursor.textContent =
+            `${Math.abs(e.latlng.lat).toFixed(5)}° ${e.latlng.lat >= 0 ? 'N' : 'S'}, ` +
+            `${Math.abs(e.latlng.lng).toFixed(5)}° ${e.latlng.lng >= 0 ? 'E' : 'W'}`;
+        }
         if (!S.map.drawMode || !S.map.drawCurrent) return;
         S.map.drawCurrent.push({ lat: e.latlng.lat, lon: e.latlng.lng });
         renderMap();
@@ -1381,7 +1414,7 @@
     const baseOn = mode !== 'mask';
     const maskOn = mode !== 'image';
     if (S.map.tileLayer && S.map.tileLayer.setOpacity) S.map.tileLayer.setOpacity(baseOn ? 1 : 0);
-    [S.map.ndwiLayer, S.map.waterImageLayer].forEach((layer) => {
+    [S.map.ndwiLayer, S.map.waterImageLayer, S.map.reliefLayer].forEach((layer) => {
       if (layer && layer.setOpacity) layer.setOpacity(baseOn ? 1 : 0);
     });
     if (S.map.waterLayer && S.map.waterLayer.eachLayer) {
@@ -1717,7 +1750,8 @@
     status(`Масштаб карты: z${z}.`);
   }
   function searchMapCoords() {
-    const lat = Number(el.mapLat.value), lon = Number(el.mapLon.value);
+    const lat = Number((el.mapSearchLat && el.mapSearchLat.value) || el.mapLat.value);
+    const lon = Number((el.mapSearchLon && el.mapSearchLon.value) || el.mapLon.value);
     if (!Number.isFinite(lat) || !Number.isFinite(lon) ||
         Math.abs(lat) > 85 || Math.abs(lon) > 180) {
       toast('Введите координаты: широта −85…85, долгота −180…180.');
@@ -2138,6 +2172,9 @@
     $('btnAnalyze').addEventListener('click', analyze);
     $('btnTiffNdwi').addEventListener('click', () => tiffToPhoto());
     el.tiffNdwiThreshold.addEventListener('input', () => { el.tiffNdwiValue.textContent = ndwiLabel(); });
+    el.tiffNdwiMax.addEventListener('input', () => { el.tiffNdwiMaxValue.textContent = '≤ ' + ndwiFmt(el.tiffNdwiMax.value); });
+    el.tiffNdwiValue.textContent = ndwiLabel();
+    el.tiffNdwiMaxValue.textContent = '≤ ' + ndwiFmt(el.tiffNdwiMax.value);
     $('btnSaveMask').addEventListener('click', saveMask);
     $('btnSaveReport').addEventListener('click', saveReport);
     $('btnUndo').addEventListener('click', undo);
@@ -2371,8 +2408,15 @@
     });
     $('mapRelief').addEventListener('change', (e) => {
       S.map.relief = e.target.checked;
-      if (!S.map.relief) { S.map.reliefImg = null; S.map.reliefGeo = null; renderMap(); }
-      loadMapView(true);
+      syncReliefLayer();
+      renderMap();
+      status(S.map.relief
+        ? 'Отмывка рельефа включена: поверх подложки наложен полупрозрачный слой рельефа Esri.'
+        : 'Отмывка рельефа выключена.');
+    });
+    el.btnMapGo.addEventListener('click', searchMapCoords);
+    [el.mapSearchLat, el.mapSearchLon].forEach((input) => {
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') searchMapCoords(); });
     });
     el.demFile.addEventListener('change', () => { if (el.demFile.files && el.demFile.files[0]) loadDem(); });
     el.btnDemShow.addEventListener('click', loadDem);
@@ -2689,9 +2733,10 @@
         <li>Поля «Зелёный канал» и «NIR-канал» задают номера каналов в TIFF,
           начиная с 1. Для двух файлов каналы берутся по порядку: первый — зелёный,
           второй — NIR.</li>
-        <li>Порог NDWI ≥ −0,25 (диапазон ползунка −1…+1). Нажмите
-          «💧 Выделить воду по NDWI» — приложение подготовит снимок и маску
-          воды и сразу рассчитает D и характеристики стока.</li>
+        <li>Диапазон NDWI задаётся двумя ползунками от −1 до +1: нижняя граница
+          по умолчанию −0,25, верхняя +1,00. К воде относятся значения внутри
+          диапазона. Нажмите «💧 Выделить воду по NDWI» — приложение подготовит
+          снимок и маску воды и сразу рассчитает D и характеристики стока.</li>
         <li>Маску и створ можно поправить вручную, затем нажать «📐 Рассчитать D».</li>
         <li>Вкладка «🗺 Карта» — просмотр подложки и ЦМР: панорамирование, масштаб,
           мини-карта. Расчётов там нет.</li>
@@ -2979,9 +3024,12 @@ N(ε) на малых размерах ячеек и завышают D.
 (поле Scale), куда также записываются размер,
 разрешение 300 dpi, источник и дата.
 Если оставить пустым — будет «not set».`,
-    mapSource: 'Подложка Sentinel-2 L2A через Planetary Computer STAC + TiTiler; резерв — Esri / Google Satellite. OpenTopoMap отключён.',
+    mapSource: 'Подложка Sentinel-2 L2A через Planetary Computer STAC + TiTiler; резерв — Esri / Google Satellite.',
+    mapSearchLat: 'Широта точки в градусах (−85…85). Кнопка «Перейти» центрирует карту без запуска расчётов.',
+    mapSearchLon: 'Долгота точки в градусах (−180…180). Кнопка «Перейти» центрирует карту без запуска расчётов.',
+    btnMapGo: 'Центрировать карту на введённых координатах.',
     ndwiThreshold: 'Порог NDWI от −1 до +1 включительно. Вода учитывается при NDWI ≥ порога (по умолчанию −0,25).',
-    mapRelief: 'Показать отмывку рельефа по ЦМР Planetary Computer.',
+    mapRelief: 'Включить полупрозрачную отмывку рельефа (Esri / USGS Shaded Relief) поверх текущей подложки — изменение видно сразу.',
     mapMarkText: 'Подпись для следующей метки на карте. Оставьте пустым — будет автоматическая нумерация.',
     mapLat: 'Широта центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.',
     mapLon: 'Долгота центра карты в градусах. Кнопка «Найти» только центрирует карту, не ставя створ.'
@@ -2989,9 +3037,9 @@ N(ε) на малых размерах ячеек и завышают D.
   const DEFAULT_TIPS = {
     btnCropApply: 'Применить выбранную область обрезки. До нажатия снимок не меняется — рамку можно тянуть и редактировать.',
     btnCropCancel: 'Отменить правку обрезки: снимок останется прежним.',
-    btnPhotoMark: 'Режим меток на фото: кликните по снимку, чтобы поставить подписанную метку.',
-    photoMarkLabel: 'Подпись следующей метки на фото.',
-    photoMarkColor: 'Цвет новых меток и рисунков-заметок на фото; цвет метки меняется в списке справа.',
+    btnPhotoMark: 'Режим меток: кликните по снимку, чтобы поставить подписанную метку.',
+    photoMarkLabel: 'Подпись следующей метки.',
+    photoMarkColor: 'Цвет новых меток и рисунков-заметок; цвет метки меняется в списке справа.',
     btnPhotoDrawFree: 'Рисовать цветные заметки прямо на снимке — линии привязаны к пикселям снимка.',
     btnPhotoDraw: 'Кисть маски: дорисовывает выделение воды на снимке; ластик удаляет лишнее.',
     mapViewMode: 'Режим просмотра подложки.',
@@ -3008,7 +3056,7 @@ N(ε) на малых размерах ячеек и завышают D.
     btnNdwi: 'Показать или скрыть слой NDWI (B03/B08) по Sentinel-2 через Planetary Computer.',
     btnWaterSelect: 'Выделить водные объекты по порогу NDWI и показать их площадь.',
     ndwiThreshold: 'Порог NDWI: вода учитывается при NDWI ≥ выбранного значения.',
-    mapRelief: 'Отмывка рельефа по ЦМР Planetary Computer.',
+    mapRelief: 'Отмывка рельефа Esri / USGS поверх подложки; снимите галочку, чтобы убрать слой.',
     mapSource: 'Основной слой — Sentinel-2 L2A через Planetary Computer, резерв — Esri / Google.'
   };
   function initTooltips() {
