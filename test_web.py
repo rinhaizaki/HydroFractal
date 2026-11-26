@@ -80,7 +80,7 @@ def test_tiff_ndwi_upload():
 
     resp = client.post("/api/tiff/ndwi", json={
         "files": [{"name": "water.tif", "data": data}],
-        "green": 2, "nir": 3, "threshold": -0.25})
+        "green": 2, "nir": 3, "threshold": -0.25, "max": 0.9})
     assert resp.status_code == 200
     assert resp.json["ok"] is True
     assert resp.json["water_pixels"] == 40 * 30
@@ -88,6 +88,7 @@ def test_tiff_ndwi_upload():
     assert resp.json["photo"].startswith("data:image/png")
     assert resp.json["mask"].startswith("data:image/png")
     assert 20 <= resp.json["seed"]["x"] <= 60
+    assert resp.json["max"] == 0.9
 
     # Потоковая загрузка больших файлов: multipart вместо base64.
     streamed = client.post("/api/tiff/ndwi/file", data={

@@ -11,7 +11,7 @@
       /[?&]static=1/.test(location.search);
   </script>
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css?v=1">
-  <link rel="stylesheet" href="styles.css?v=13">
+  <link rel="stylesheet" href="styles.css?v=14">
 </head>
 <body>
 <div class="app-shell">
@@ -28,48 +28,48 @@
 
     <nav class="menu" aria-label="Главное меню">
       <div class="menu-group">
-        <button class="menu-trigger" data-menu="file">Файл</button>
+        <button class="menu-trigger" data-menu="file" title="Меню «Файл»: загрузка и сохранение">Файл</button>
         <div class="menu-dropdown" id="menu-file">
-          <button data-act="open">📂 Загрузить снимок… <span class="key">Ctrl+O</span></button>
-          <button data-act="close">🗑 Закрыть снимок</button>
+          <button data-act="open" title="Открыть снимок с диска (Ctrl+O)">📂 Загрузить снимок… <span class="key">Ctrl+O</span></button>
+          <button data-act="close" title="Закрыть снимок и очистить результат">🗑 Закрыть снимок</button>
           <hr>
-          <button data-act="save-mask">💾 Сохранить маску (PNG)</button>
-          <button data-act="save-report">📄 Сохранить отчёт (PDF)</button>
+          <button data-act="save-mask" title="Сохранить маску воды в PNG">💾 Сохранить маску (PNG)</button>
+          <button data-act="save-report" title="Сохранить отчёт в PDF">📄 Сохранить отчёт (PDF)</button>
         </div>
       </div>
       <div class="menu-group">
-        <button class="menu-trigger" data-menu="edit">Правка</button>
+        <button class="menu-trigger" data-menu="edit" title="Меню «Правка»: отмена и работа с маской">Правка</button>
         <div class="menu-dropdown" id="menu-edit">
-          <button data-act="undo">↶ Отменить <span class="key">Ctrl+Z</span></button>
-          <button data-act="redo">↷ Повторить <span class="key">Ctrl+Y</span></button>
+          <button data-act="undo" title="Отменить действие (Ctrl+Z)">↶ Отменить <span class="key">Ctrl+Z</span></button>
+          <button data-act="redo" title="Повторить действие (Ctrl+Y)">↷ Повторить <span class="key">Ctrl+Y</span></button>
           <hr>
-          <button data-act="clear-mask">Очистить маску</button>
-          <button data-act="reset-view">Сбросить масштаб</button>
+          <button data-act="clear-mask" title="Очистить маску выделения">Очистить маску</button>
+          <button data-act="reset-view" title="Вернуть исходный масштаб снимка">Сбросить масштаб</button>
         </div>
       </div>
       <div class="menu-group">
-        <button class="menu-trigger" data-menu="view">Вид</button>
+        <button class="menu-trigger" data-menu="view" title="Меню «Вид»: режимы отображения">Вид</button>
         <div class="menu-dropdown" id="menu-view">
-          <button data-act="view-overlay">Снимок + маска</button>
-          <button data-act="view-image">Только снимок</button>
-          <button data-act="view-mask">Только маска</button>
+          <button data-act="view-overlay" title="Показать снимок вместе с маской">Снимок + маска</button>
+          <button data-act="view-image" title="Показать только снимок">Только снимок</button>
+          <button data-act="view-mask" title="Показать только маску">Только маска</button>
           <hr>
-          <button data-act="toggle-minimap">🗺 Карта просмотра</button>
-          <button data-act="zoom-fit">⛶ Показать всё</button>
+          <button data-act="toggle-minimap" title="Показать или скрыть карту просмотра">🗺 Карта просмотра</button>
+          <button data-act="zoom-fit" title="Вписать снимок в окно">⛶ Показать всё</button>
         </div>
       </div>
       <div class="menu-group">
-        <button class="menu-trigger" data-menu="tabs">Переход</button>
+        <button class="menu-trigger" data-menu="tabs" title="Переход между вкладками">Переход</button>
         <div class="menu-dropdown" id="menu-tabs">
-          <button data-act="tab-photo">📷 Фотоснимок</button>
-          <button data-act="tab-map">🗺 Карта</button>
+          <button data-act="tab-photo" title="Открыть вкладку «Фотоснимок»">📷 Фотоснимок</button>
+          <button data-act="tab-map" title="Открыть вкладку «Карта»">🗺 Карта</button>
         </div>
       </div>
       <div class="menu-group">
-        <button class="menu-trigger" data-menu="help">Справка</button>
+        <button class="menu-trigger" data-menu="help" title="Справка и сведения о программе">Справка</button>
         <div class="menu-dropdown" id="menu-help">
-          <button data-act="help">Инструкция по работе</button>
-          <button data-act="about">О программе</button>
+          <button data-act="help" title="Открыть инструкцию">Инструкция по работе</button>
+          <button data-act="about" title="Сведения о программе">О программе</button>
         </div>
       </div>
     </nav>
@@ -82,8 +82,8 @@
   <!-- ========================== ВКЛАДКИ ========================== -->
   <main class="main">
     <div class="tabs" role="tablist">
-      <button class="tab active" data-tab="photo" role="tab" aria-selected="true">📷 Фотоснимок</button>
-      <button class="tab" data-tab="map" role="tab" aria-selected="false">🗺 Карта</button>
+      <button class="tab active" data-tab="photo" title="Фотоснимок: выделение воды и расчёт D" role="tab" aria-selected="true">📷 Фотоснимок</button>
+      <button class="tab" data-tab="map" title="Карта: просмотр подложки и ЦМР" role="tab" aria-selected="false">🗺 Карта</button>
     </div>
 
     <!-- ---------- вкладка «Фотоснимок» ---------- -->
@@ -91,15 +91,15 @@
   <!-- ======================== ИНСТРУМЕНТЫ ======================== -->
   <div class="toolbars ribbon">
     <div class="ribbon-tabs" role="tablist">
-        <button class="ribbon-tab active" data-ribbon-tab="photo-basic" role="tab" aria-selected="true">Снимок и выделение</button>
-        <button class="ribbon-tab" data-ribbon-tab="photo-tools" role="tab" aria-selected="false">Инструменты и правка маски</button>
-        <button class="ribbon-tab" data-ribbon-tab="photo-view" role="tab" aria-selected="false">Ориентация, обрезка, сетка и масштаб</button>
-        <button class="ribbon-tab" data-ribbon-tab="photo-ndwi" role="tab" aria-selected="false">TIFF и NDWI</button>
+        <button class="ribbon-tab active" data-ribbon-tab="photo-basic" title="Снимок и выделение" role="tab" aria-selected="true">Снимок и выделение</button>
+        <button class="ribbon-tab" data-ribbon-tab="photo-tools" title="Инструменты и правка маски" role="tab" aria-selected="false">Инструменты и правка маски</button>
+        <button class="ribbon-tab" data-ribbon-tab="photo-view" title="Ориентация, обрезка, сетка, масштаб" role="tab" aria-selected="false">Ориентация, обрезка, сетка и масштаб</button>
+        <button class="ribbon-tab" data-ribbon-tab="photo-ndwi" title="Загрузка TIFF и выделение воды по NDWI" role="tab" aria-selected="false">TIFF и NDWI</button>
     </div>
     <div class="ribbon-panels">
         <div class="ribbon-panel active" data-ribbon-panel="photo-basic" role="tabpanel">
           <div class="toolbar">
-      <button class="btn primary" id="btnLoad">📂 Загрузить снимок</button>
+      <button class="btn primary" id="btnLoad" title="Загрузить снимок реки (JPG, PNG, TIFF, BMP)">📂 Загрузить снимок</button>
       <span class="sep"></span>
       <label class="field-label" for="method">Способ выделения:</label>
       <select id="method" class="select wide">
@@ -138,6 +138,10 @@
         <option value="mask">Заполненная маска</option>
       </select>
     </div>
+    <p class="warning warning-compact">
+      Важно: оставьте выделенной только ту часть реки, которая <b>ВЫШЕ створа</b>
+      (точка 1). Всё ниже по течению сотрите «🧹 Ластиком» — иначе расчёт D будет неверным.
+    </p>
     </details>
         </div>
         <div class="ribbon-panel" data-ribbon-panel="photo-view" role="tabpanel">
@@ -145,12 +149,12 @@
       <span class="field-label">Ориентация:</span>
       <button class="btn small" data-rotate="rot1" title="Повернуть против часовой стрелки">⟲ 90°</button>
       <button class="btn small" data-rotate="rot3" title="Повернуть по часовой стрелке">⟳ 90°</button>
-      <button class="btn small" data-rotate="rot2">180°</button>
-      <button class="btn small" data-rotate="fliph">⇋ отразить</button>
-      <button class="btn small" data-rotate="flipv">⇵ отразить</button>
-      <button class="btn small" id="btnCrop">✂ Обрезать снимок</button>
-      <button class="btn small accent" id="btnCropApply" hidden>✓ Применить обрезку</button>
-      <button class="btn small" id="btnCropCancel" hidden>✕ Отменить правку</button>
+      <button class="btn small" data-rotate="rot2" title="Повернуть на 180°">180°</button>
+      <button class="btn small" data-rotate="fliph" title="Отразить по горизонтали">⇋ отразить</button>
+      <button class="btn small" data-rotate="flipv" title="Отразить по вертикали">⇵ отразить</button>
+      <button class="btn small" id="btnCrop" title="Выбрать область обрезки снимка и маски">✂ Обрезать снимок</button>
+      <button class="btn small accent" id="btnCropApply" hidden title="Применить выбранную обрезку">✓ Применить обрезку</button>
+      <button class="btn small" id="btnCropCancel" hidden title="Отменить обрезку, вернуть исходный снимок">✕ Отменить правку</button>
       <span class="sep"></span>
       <label class="field-label" for="maxDivs">Число делений сетки:</label>
       <input type="range" id="maxDivs" min="10" max="120" value="60" class="range short">
@@ -158,8 +162,8 @@
       <span class="sep"></span>
       <button class="btn small" id="btnZoomOut" title="Уменьшить">🔍−</button>
       <button class="btn small" id="btnZoomIn" title="Увеличить">🔍+</button>
-      <button class="btn small" id="btnZoomFit">⛶ Всё</button>
-      <button class="btn small" id="btnMinimap">🗺 Карта</button>
+      <button class="btn small" id="btnZoomFit" title="Вписать весь снимок в окно">⛶ Всё</button>
+      <button class="btn small" id="btnMinimap" title="Показать или скрыть карту просмотра">🗺 Карта</button>
     </div>
     </details>
         </div>
@@ -169,34 +173,30 @@
       <div class="workspace">
         <div class="work-left">
           <div class="action-row">
-            <button class="btn accent" id="btnSegment">🌊 Выделить реку</button>
-            <button class="btn accent" id="btnAnalyze">📐 Рассчитать D</button>
-            <input type="text" id="photoMarkLabel" class="mark-label" placeholder="Подпись метки на фото" size="14" title="Подпись для следующей метки на фото">
-            <input type="color" id="photoMarkColor" value="#5F0001" title="Цвет меток и рисунков-заметок на фото">
+            <button class="btn accent" id="btnSegment" title="Выделить воду по цвету точки расхода">🌊 Выделить реку</button>
+            <button class="btn accent" id="btnAnalyze" title="Рассчитать фрактальную размерность D по маске">📐 Рассчитать D</button>
+            <input type="text" id="photoMarkLabel" class="mark-label" placeholder="Подпись метки" size="14" title="Подпись для следующей метки">
+            <input type="color" id="photoMarkColor" value="#5F0001" title="Цвет меток и рисунков-заметок">
             <button class="btn small" id="btnPhotoDrawFree" title="Рисовать цветные заметки, привязанные к пикселям снимка">✏ Рисовать</button>
-            <button class="btn small" id="btnPhotoMark" title="Режим меток на фото: кликните по снимку, чтобы поставить метку">📌 Метка на фото</button>
+            <button class="btn small" id="btnPhotoMark" title="Режим меток: кликните по снимку, чтобы поставить метку">📌 Метка</button>
             <label class="field-label" for="viewMode">Вид:</label>
             <select id="viewMode" class="select">
               <option value="overlay">Снимок + маска</option>
               <option value="image">Только снимок</option>
               <option value="mask">Только маска</option>
             </select>
-            <button class="btn" id="btnSaveMask">💾 Сохранить маску (PNG)</button>
-            <button class="btn" id="btnSaveReport">📄 Сохранить отчёт (PDF)</button>
+            <button class="btn" id="btnSaveMask" title="Сохранить маску в PNG">💾 Сохранить маску (PNG)</button>
+            <button class="btn" id="btnSaveReport" title="Сохранить отчёт в PDF">📄 Сохранить отчёт (PDF)</button>
           </div>
-          <p class="warning">
-            Важно: оставьте выделенной только ту часть реки, которая <b>ВЫШЕ створа</b>
-            (точка 1). Всё ниже по течению сотрите «🧹 Ластиком» — иначе расчёт D будет неверным.
-          </p>
           <div class="canvas-wrap" id="photoWrap">
             <canvas id="photoCanvas"></canvas>
             <div class="placeholder" id="photoPlaceholder">
               <span class="placeholder-icon">≋</span>
               <strong>Загрузите спутниковый снимок реки</strong>
-              <span>кликните по руслу (створ) → «Выделить реку» → ластиком уберите всё ниже створа → «Рассчитать D»</span>
+              <span>кликните по руслу → «Выделить реку» → «Рассчитать D»</span>
               <span>
-                <button class="btn accent" id="btnLoadBig">📂 Выбрать файл</button>
-                <button class="btn" id="btnDemoImage">Попробовать на примере</button>
+                <button class="btn accent" id="btnLoadBig" title="Выбрать файл снимка">📂 Выбрать файл</button>
+                <button class="btn" id="btnDemoImage" title="Загрузить демонстрационный снимок реки">Попробовать на примере</button>
               </span>
             </div>
             <div class="minimap" id="minimapBox" hidden>
@@ -212,7 +212,7 @@
 
         <aside class="results">
           <div class="marks-panel" id="photoMarksPanel">
-            <div class="marks-head">Метки на фото <span class="note">— цвет, название и переход к точке</span></div>
+            <div class="marks-head">Метки <span class="note">— цвет, название и переход к точке</span></div>
             <div id="photoMarksList"></div>
           </div>
           <div class="results-head">
@@ -256,9 +256,12 @@
       <input type="number" id="tiffGreen" class="num" value="1" min="1" step="1" title="Номер зелёного канала в TIFF, начиная с 1">
       <label class="field-label" for="tiffNir">NIR-канал</label>
       <input type="number" id="tiffNir" class="num" value="2" min="1" step="1" title="Номер ближнего инфракрасного канала в TIFF, начиная с 1">
-      <button class="btn accent" id="btnTiffNdwi">💧 Выделить воду по NDWI</button>
-      <input type="range" id="tiffNdwiThreshold" class="range short" min="-100" max="100" value="-25" step="1" title="NDWI: от −1 до +1, по умолчанию ≥ −0,25">
+      <button class="btn accent" id="btnTiffNdwi" title="Прочитать TIFF, выделить воду по NDWI и рассчитать D">💧 Выделить воду по NDWI</button>
+      <label class="field-label" for="tiffNdwiThreshold">Диапазон NDWI:</label>
+      <input type="range" id="tiffNdwiThreshold" class="range short" min="-100" max="100" value="-25" step="1" title="Нижняя граница NDWI: от −1 до +1, по умолчанию −0,25">
       <span class="field-label" id="tiffNdwiValue">NDWI ≥ −0,25</span>
+      <input type="range" id="tiffNdwiMax" class="range short" min="-100" max="100" value="100" step="1" title="Верхняя граница NDWI: от −1 до +1, по умолчанию +1,00">
+      <span class="field-label" id="tiffNdwiMaxValue">≤ +1,00</span>
       <a class="btn small" href="https://earthexplorer.usgs.gov/" target="_blank" rel="noopener noreferrer" title="Архив USGS EarthExplorer — оттуда можно скачать ЦМР модель (DEM)">🌐 EarthExplorer — скачать ЦМР</a>
           </div>
         </div>
@@ -268,7 +271,7 @@
     <section class="panel" id="panel-map" role="tabpanel">
       <div class="toolbars ribbon">
         <div class="ribbon-tabs" role="tablist">
-          <button class="ribbon-tab active" data-ribbon-tab="map-layers" role="tab" aria-selected="true">Подложка и вид</button>
+          <button class="ribbon-tab active" data-ribbon-tab="map-layers" title="Подложка, ЦМР и координаты" role="tab" aria-selected="true">Подложка и вид</button>
         </div>
         <div class="ribbon-panels">
           <div class="ribbon-panel active" data-ribbon-panel="map-layers" role="tabpanel">
@@ -284,6 +287,14 @@
               <button class="btn small" id="btnMapZoomIn" title="Увеличить масштаб">🔍+</button>
               <button class="btn small" id="btnMapMinimap" title="Мини-карта">🗺 Мини-карта</button>
               <span class="map-coords" id="mapCoords">30.33510° E, 59.93428° N</span>
+            </div>
+            <div class="toolbar coord-toolbar">
+              <label class="field-label">Курсор на карте:</label>
+              <span class="map-coords" id="mapCursor">—, —</span>
+              <label class="field-label" for="mapSearchLat">Найти по координатам:</label>
+              <input type="number" id="mapSearchLat" class="num coord-num" value="59.93428" min="-85" max="85" step="0.00001" title="Широта точки, к которой нужно центрировать карту">
+              <input type="number" id="mapSearchLon" class="num coord-num" value="30.33510" min="-180" max="180" step="0.00001" title="Долгота точки, к которой нужно центрировать карту">
+              <button class="btn small" id="btnMapGo" title="Центрировать карту на введённых широте и долготе">🔎 Перейти</button>
             </div>
             <div class="toolbar dem-toolbar">
               <label class="field-label" for="demFile" title="Файл ЦМР в формате GeoTIFF — можно передвигаться по нему мышью">ЦМР (GeoTIFF):</label>
@@ -349,8 +360,8 @@
     <button class="modal-close" id="modalClose" title="Закрыть">✕</button>
     <h2 id="modalTitle">Инструкция</h2>
     <div id="modalBody"></div>
-    <button class="btn accent" id="modalOk">Понятно</button>
-    <button class="btn" id="btnHelpPdf">📄 Скачать инструкцию (PDF)</button>
+    <button class="btn accent" id="modalOk" title="Закрыть сообщение">Понятно</button>
+    <button class="btn" id="btnHelpPdf" title="Скачать инструкцию в формате PDF">📄 Скачать инструкцию (PDF)</button>
   </div>
 </div>
 
@@ -359,8 +370,8 @@
     <h2 id="confirmTitle">Подтверждение</h2>
     <div id="confirmText"></div>
     <div class="confirm-actions">
-      <button class="btn accent" id="confirmYes">Да, продолжить</button>
-      <button class="btn" id="confirmNo">Отмена</button>
+      <button class="btn accent" id="confirmYes" title="Подтвердить действие">Да, продолжить</button>
+      <button class="btn" id="confirmNo" title="Отменить действие">Отмена</button>
     </div>
   </div>
 </div>
@@ -372,7 +383,7 @@
 
 <script src="vendor/leaflet/leaflet.js?v=1"></script>
 <script src="vendor/geotiff.js?v=1"></script>
-<script src="client-core.js?v=19"></script>
-<script src="app.js?v=24"></script>
+<script src="client-core.js?v=21"></script>
+<script src="app.js?v=26"></script>
 </body>
 </html>
