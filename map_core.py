@@ -488,6 +488,29 @@ def fetch_dem_for_view(geo, dem_zoom, margin=1, use_cache=True, progress=None):
     return arr, dgeo
 
 
+
+def resample_mask_to_view(mask, dgeo, geo, width, height):
+    """Маска на сетке DEM → булева маска размером с видимое окно карты."""
+    import numpy as np
+    src = np.asarray(mask, dtype=bool)
+    H, W = int(height), int(width)
+    out = np.zeros((H, W), dtype=bool)
+    if not src.size or not src.shape[0] or not src.shape[1]:
+        return out
+    k = 2.0 ** (float(dgeo["z"]) - float(geo["z"]))
+    fy = (float(geo["y0"]) * k - float(dgeo["y0"])) * TILE
+    fx = (float(geo["x0"]) * k - float(dgeo["x0"])) * TILE
+    ys = np.floor(fy + (np.arange(H) + 0.5) * k).astype(int)
+    xs = np.floor(fx + (np.arange(W) + 0.5) * k).astype(int)
+    vy = (ys >= 0) & (ys < src.shape[0])
+    vx = (xs >= 0) & (xs < src.shape[1])
+    if not vy.any() or not vx.any():
+        return out
+    yy = np.clip(ys, 0, src.shape[0] - 1)
+    xx = np.clip(xs, 0, src.shape[1] - 1)
+    out = src[np.ix_(yy, xx)] & vy[:, None] & vx[None, :]
+    return out
+
 def lonlat_to_dem_pixel(dgeo, lon, lat):
     """(широта, долгота) → (строка, столбец) в массиве рельефа."""
     tx, ty = lonlat_to_tile(lon, lat, dgeo["z"])
