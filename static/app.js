@@ -27,6 +27,8 @@
     ndwiThreshold: $('ndwiThreshold'), mapViewMode: $('mapViewMode'),
     tiffFile: $('tiffFile'), tiffGreen: $('tiffGreen'), tiffNir: $('tiffNir'),
     tiffNdwiThreshold: $('tiffNdwiThreshold'), tiffNdwiValue: $('tiffNdwiValue'),
+    demFile: $('demFile'), demStatus: $('demStatus'),
+    btnDemShow: $('btnDemShow'), btnDemClear: $('btnDemClear'),
     leafletWrap: $('leafletMap'),
     mapMinimapBox: $('mapMinimapBox'), mapMinimapCanvas: $('mapMinimapCanvas'),
     status: $('status'), statusRight: $('statusRight'),
@@ -66,7 +68,8 @@
       marks: [], markMode: false, viewMode: 'overlay',
       drawings: [], drawMode: false, drawCurrent: null, drawLayer: null, drawColor: '#5F0001',
       leafletCredit: 'Sentinel-2 L2A: Copernicus / Planetary Computer',
-      overlayGeo: null, reliefGeo: null, moveTimer: null
+      overlayGeo: null, reliefGeo: null, moveTimer: null,
+      demLayer: null, demInfo: null
     }
   };
 
@@ -665,6 +668,13 @@
     if (!file.type.startsWith('image/') && !/\.(tiff?|bmp)$/i.test(file.name)) {
       toast('Нужен файл изображения (JPG, PNG, TIFF, BMP).'); return;
     }
+    // TIFF не открывается как обычная картинка через <img>: сразу направляем
+    // его в NDWI-обработчик, который понимает спектральные каналы и BigTIFF.
+    if (/\.(tiff?)$/i.test(file.name)) {
+      status(`«${file.name}» — TIFF. Читаем каналы и выделяем воду по NDWI…`);
+      await tiffToPhoto([file]);
+      return;
+    }
     const reader = new FileReader();
     let raw;
     try {
@@ -752,8 +762,8 @@
   function ndwiLabel() {
     return 'NDWI ≥ ' + (Number(el.tiffNdwiThreshold.value) / 100).toFixed(2).replace('.', ',');
   }
-  async function tiffToPhoto() {
-    const files = Array.from(el.tiffFile.files || []);
+  async function tiffToPhoto(overrideFiles) {
+    const files = overrideFiles ? Array.from(overrideFiles) : Array.from(el.tiffFile.files || []);
     if (!files.length) { toast('Выберите TIFF-файл.'); return; }
     if (files.length > 2) { toast('Нужно один многоканальный TIFF или два файла: зелёный и NIR.'); return; }
     busy(true, 'Читаем TIFF потоком и считаем NDWI…');
@@ -794,7 +804,11 @@
         (resp.downsampled ? ' Большой TIFF прочитан по уменьшенной сетке.' : ''));
       toast('Вода по NDWI выделена');
     } catch (e) {
-      status(e.message, true); toast(e.message);
+      const msg = e && e.message ? e.message : String(e);
+      const hint = /канал|NDWI|воды|IZ|TIFF/i.test(msg)
+        ? ' Если это карта высот, откройте вкладку «Карта» → «ЦМР (GeoTIFF)» — там по ней можно перемещаться.'
+        : '';
+      status(msg + hint, true); toast(msg);
     } finally { busy(false); }
   }
 
@@ -1246,6 +1260,55 @@
       busy(false);
     }
   }
+  function demBounds(info) {
+    if (!window.L || !info || !info.bbox || info.bbox.length < 4) return null;
+    const [w, s, e2, n] = info.bbox;
+    if (![w, s, e2, n].every((v) => Number.isFinite(v)) || !(e2 > w && n > s)) return null;
+    return L.latLngBounds([[s, w], [n, e2]]);
+  }
+
+  async function loadDem() {
+    const file = el.demFile.files && el.demFile.files[0];
+    if (!file) { status('Выберите файл ЦМР (GeoTIFF).', true); toast('Выберите файл ЦМР'); return; }
+    busy(true, 'Читаем ЦМР…');
+    try {
+      if (!window.HFClient || !window.HFClient.dispatch) {
+        throw new Error('Локальный ГИС-модуль не загрузился. Обновите страницу (Ctrl+F5).');
+      }
+      const resp = await window.HFClient.dispatch('/api/dem/preview', {file});
+      if (!window.L || !S.map.leaflet) initLeaflet();
+      if (!S.map.leaflet || !window.L) {
+        throw new Error('Карта не инициализирована — проверьте загрузку Leaflet.');
+      }
+      if (S.map.demLayer) S.map.leaflet.removeLayer(S.map.demLayer);
+      const bounds = demBounds(resp) || S.map.leaflet.getBounds();
+      S.map.demLayer = L.imageOverlay(resp.image, bounds, {
+        opacity: 0.85, interactive: false, alt: resp.name || 'ЦМР'
+      }).addTo(S.map.leaflet);
+      S.map.demLayer.bringToBack();
+      if (demBounds(resp)) S.map.leaflet.fitBounds(bounds);
+      S.map.demInfo = resp;
+      el.demStatus.textContent = `ЦМР «${resp.name}» ${fmt(resp.sourceWidth, 0)}×${fmt(resp.sourceHeight, 0)} · ` +
+        `${fmt(resp.min, 0)}…${fmt(resp.max, 0)} м` +
+        (resp.downsampled ? ' · уменьшена для просмотра' : '');
+      status(`ЦМР загружена. Перетаскивайте карту и меняйте масштаб — высота под курсором в строке ЦМР. ` +
+        (resp.bbox ? 'Привязка из GeoTIFF найдена.' : 'GeoTIFF без геопривязки — показан в текущем виде карты.'));
+      toast('ЦМР показана на карте');
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      el.demStatus.textContent = 'Ошибка чтения ЦМР';
+      status('ЦМР: ' + msg, true); toast(msg);
+    } finally { busy(false); }
+  }
+
+  function clearDem() {
+    if (S.map.demLayer && S.map.leaflet) S.map.leaflet.removeLayer(S.map.demLayer);
+    S.map.demLayer = null; S.map.demInfo = null;
+    if (window.HFClient) window.HFClient.dem = null;
+    el.demStatus.textContent = 'ЦМР не загружена';
+    status('ЦМР убрана с карты.');
+  }
+
   function initLeaflet() {
     if (!window.L || !el.leafletWrap || S.map.leaflet) return;
     const map = L.map(el.leafletWrap, {
@@ -1287,6 +1350,14 @@
         if (S.map.drawCurrent.length > 1) S.map.drawings.push(S.map.drawCurrent);
         S.map.drawCurrent = null;
         rebuildDrawLayer();
+      });
+      map.on('mousemove', (e) => {
+        if (!S.map.demInfo || !window.HFClient || !window.HFClient.demElevation) return;
+        const h = window.HFClient.demElevation(e.latlng.lat, e.latlng.lng);
+        if (h === null || h === undefined) return;
+        el.demStatus.textContent = `Высота под курсором: ${fmt(h, 1)} м · ` +
+          `${fmt(S.map.demInfo.sourceWidth, 0)}×${fmt(S.map.demInfo.sourceHeight, 0)} · ` +
+          `${fmt(S.map.demInfo.min, 0)}…${fmt(S.map.demInfo.max, 0)} м`;
       });
     }
     map.on('click', (e) => {
@@ -2065,7 +2136,7 @@
     });
     $('btnSegment').addEventListener('click', segment);
     $('btnAnalyze').addEventListener('click', analyze);
-    $('btnTiffNdwi').addEventListener('click', tiffToPhoto);
+    $('btnTiffNdwi').addEventListener('click', () => tiffToPhoto());
     el.tiffNdwiThreshold.addEventListener('input', () => { el.tiffNdwiValue.textContent = ndwiLabel(); });
     $('btnSaveMask').addEventListener('click', saveMask);
     $('btnSaveReport').addEventListener('click', saveReport);
@@ -2303,6 +2374,9 @@
       if (!S.map.relief) { S.map.reliefImg = null; S.map.reliefGeo = null; renderMap(); }
       loadMapView(true);
     });
+    el.demFile.addEventListener('change', () => { if (el.demFile.files && el.demFile.files[0]) loadDem(); });
+    el.btnDemShow.addEventListener('click', loadDem);
+    el.btnDemClear.addEventListener('click', clearDem);
     $('btnMapHome').addEventListener('click', () => {
       centerMapAt(59.93428, 30.33510, 11);
       status('Центр карты — Санкт-Петербург. Створ не изменён.');
@@ -2521,7 +2595,7 @@
     'view-overlay': 'Вид → Снимок + маска', 'view-image': 'Вид → Только снимок',
     'view-mask': 'Вид → Только маска', 'toggle-minimap': 'Вид → Карта просмотра',
     'zoom-fit': 'Вид → Показать всё', 'tab-photo': 'Переход → Фотоснимок',
-    'tab-map': 'Переход → Карта (только просмотр)', 'help': 'Справка → Инструкция',
+    'tab-map': 'Переход → Карта (просмотр подложки и ЦМР)', 'help': 'Справка → Инструкция',
     'about': 'Справка → О программе',
     'rot1': '⟲ 90°', 'rot3': '⟳ 90°', 'rot2': '180°', 'fliph': '⇋ отразить', 'flipv': '⇵ отразить',
     'btnLoad': '📂 Загрузить снимок', 'btnLoadBig': '📂 Выбрать файл',
@@ -2619,8 +2693,14 @@
           «💧 Выделить воду по NDWI» — приложение подготовит снимок и маску
           воды и сразу рассчитает D и характеристики стока.</li>
         <li>Маску и створ можно поправить вручную, затем нажать «📐 Рассчитать D».</li>
-        <li>Вкладка «🗺 Карта» нужна только для просмотра подложки: панорамирование,
-          масштаб, мини-карта. Расчётов там нет.</li>
+        <li>Вкладка «🗺 Карта» — просмотр подложки и ЦМР: панорамирование, масштаб,
+          мини-карта. Расчётов там нет.</li>
+        <li>Чтобы перемещаться по ЦМР внутри сайта, в ленте «Подложка и вид» выберите
+          GeoTIFF с высотами и нажмите «🏔 Показать ЦМР» (файл можно просто выбрать —
+          карта откроется сразу). Изображение привязывается по геотегам GeoTIFF,
+          перетаскивается мышью и масштабируется колесом; под курсором показывается
+          высота. Кнопка EarthExplorer ведёт туда, где можно скачать ЦМР модель.
+          Большие файлы читаются блоками, а для показа берется уменьшенный уровень.</li>
       </ol>
       <h2>5. Отчёт</h2>
       <p>PDF повторяет эталон: титул, разделы I–VII, таблицы 1–5, рисунки 1–4, формулы (1)–(11)

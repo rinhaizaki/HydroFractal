@@ -285,6 +285,14 @@
               <button class="btn small" id="btnMapMinimap" title="Мини-карта">🗺 Мини-карта</button>
               <span class="map-coords" id="mapCoords">30.33510° E, 59.93428° N</span>
             </div>
+            <div class="toolbar dem-toolbar">
+              <label class="field-label" for="demFile" title="Файл ЦМР в формате GeoTIFF — можно передвигаться по нему мышью">ЦМР (GeoTIFF):</label>
+              <input type="file" id="demFile" accept=".tif,.tiff,image/tiff" title="Загрузите ЦМР: после этого карту можно перетаскивать и масштабировать">
+              <button class="btn small" id="btnDemShow" title="Показать загруженную ЦМР на карте">🏔 Показать ЦМР</button>
+              <button class="btn small" id="btnDemClear" title="Убрать ЦМР с карты">✕ Убрать</button>
+              <a class="btn small" href="https://earthexplorer.usgs.gov/" target="_blank" rel="noopener noreferrer" title="Архив USGS EarthExplorer — оттуда можно скачать ЦМР модель (DEM)">🌐 EarthExplorer — скачать ЦМР</a>
+              <span class="map-coords" id="demStatus">ЦМР не загружена</span>
+            </div>
           </div>
         </div>
       </div>
@@ -363,7 +371,8 @@
 <div class="toast" id="toast" hidden></div>
 
 <script src="vendor/leaflet/leaflet.js?v=1"></script>
-<script src="client-core.js?v=18"></script>
-<script src="app.js?v=23"></script>
+<script src="vendor/geotiff.js?v=1"></script>
+<script src="client-core.js?v=19"></script>
+<script src="app.js?v=24"></script>
 </body>
 </html>

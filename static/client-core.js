@@ -419,6 +419,150 @@
     return out;
   }
 
+  // geotiff.js умеет LZW, Deflate, JPEG, BigTIFF, тайлы, предсказатели и
+  // overview-уровни — поэтому используем его как основной декодер TIFF.
+  // Файл читается блоками через Blob.slice, а не целиком в память.
+  async function geotiffSource(file) {
+    if (!window.GeoTIFF || !window.GeoTIFF.fromBlob) {
+      throw new Error('Библиотека GeoTIFF не загрузилась. Обновите страницу (Ctrl+F5).');
+    }
+    const tiff = await window.GeoTIFF.fromBlob(file);
+    const count = await tiff.getImageCount();
+    let best = null, bestPixels = Infinity, bestValid = false, bestIndex = 0;
+    for (let i = 0; i < Math.min(count, 32); i++) {
+      let img;
+      try { img = await tiff.getImage(i); } catch (e) { continue; }
+      const px = img.getWidth() * img.getHeight();
+      if (!px) continue;
+      const valid = px <= TIFF_MAX_PIXELS;
+      const better = !best ||
+        (valid && !bestValid) ||
+        (valid === bestValid && (valid ? px > bestPixels : px < bestPixels));
+      if (better) { best = img; bestPixels = px; bestValid = valid; bestIndex = i; }
+    }
+    if (!best) throw new Error('TIFF не содержит изображения: ' + file.name);
+    return {tiff, image: best, index: bestIndex};
+  }
+
+  async function decodeTiffBlobSmart(file) {
+    let geErr = null;
+    try {
+      const {image} = await geotiffSource(file);
+      const SW = image.getWidth(), SH = image.getHeight();
+      const scale = Math.min(1, Math.sqrt(TIFF_MAX_PIXELS / (SW * SH)));
+      const W = Math.max(1, Math.floor(SW * scale));
+      const H = Math.max(1, Math.floor(SH * scale));
+      const raw = await image.readRasters({width: W, height: H, resampleMethod: 'nearest'});
+      const bands = (Array.isArray(raw) ? Array.from(raw) : [raw]).map((b) => {
+        const noData = image.getGDALNoData && image.getGDALNoData();
+        if (noData === null || noData === undefined || !Number.isFinite(Number(noData))) {
+          return b instanceof Float32Array ? b : Float32Array.from(b, Number);
+        }
+        const out = Float32Array.from(b, Number);
+        for (let i = 0; i < out.length; i++) if (out[i] === Number(noData)) out[i] = NaN;
+        return out;
+      });
+      if (!bands.length) throw new Error('В TIFF нет каналов.');
+      return {
+        name: file.name, W, H,
+        samples: bands.length, bands, step: SW / W,
+        sourceW: SW, sourceH: SH,
+        bbox: (() => { try { return image.getBoundingBox(); } catch (e) { return null; } })()
+      };
+    } catch (e) {
+      geErr = e;
+    }
+    try {
+      return await decodeTiffBlob(file);
+    } catch (e2) {
+      throw new Error('Не удалось прочитать «' + file.name + '». ' +
+        (geErr && geErr.message ? geErr.message + '. ' : '') + (e2.message || e2));
+    }
+  }
+
+  function demColor(t) {
+    const stops = [
+      [0, 40, 72, 52], [0.18, 76, 122, 66], [0.42, 154, 166, 92],
+      [0.62, 206, 188, 116], [0.80, 166, 132, 98], [1, 248, 248, 252]
+    ];
+    const v = Math.min(1, Math.max(0, t));
+    for (let i = 1; i < stops.length; i++) {
+      if (v <= stops[i][0]) {
+        const a = stops[i - 1], b = stops[i];
+        const k = (v - a[0]) / (b[0] - a[0] || 1);
+        return [a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k,
+          a[3] + (b[3] - a[3]) * k];
+      }
+    }
+    return [248, 248, 252];
+  }
+
+  async function demPreview(p) {
+    const file = p && p.file;
+    if (!file) throw new Error('Выберите файл ЦМР (GeoTIFF).');
+    const {image} = await geotiffSource(file);
+    const SW = image.getWidth(), SH = image.getHeight();
+    const W = Math.min(SW, 1400);
+    const H = Math.max(1, Math.round(W * SH / SW));
+    const raw = await image.readRasters({samples: [0], width: W, height: H,
+      resampleMethod: 'nearest'});
+    const band = Array.isArray(raw) ? raw[0] : raw;
+    const noData = image.getGDALNoData && image.getGDALNoData();
+    let lo = Infinity, hi = -Infinity;
+    const stride = Math.max(1, Math.floor(band.length / 200000));
+    for (let i = 0; i < band.length; i += stride) {
+      const v = Number(band[i]);
+      if (!Number.isFinite(v) || (noData !== null && v === Number(noData))) continue;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    if (!Number.isFinite(lo)) throw new Error('В ЦМР нет корректных значений высот.');
+    if (hi === lo) hi = lo + 1;
+
+    const cv = canvasContext(W, H);
+    const imgData = cv.ctx.createImageData(W, H);
+    for (let y = 0; y < H; y++) {
+      const sy = Math.min(SH - 1, Math.floor((y + 0.5) * SH / H));
+      for (let x = 0; x < W; x++) {
+        const sx = Math.min(SW - 1, Math.floor((x + 0.5) * SW / W));
+        const v = Number(band[sy * W + sx]);
+        const q = (y * W + x) * 4;
+        if (!Number.isFinite(v) || (noData !== null && v === Number(noData))) {
+          imgData.data[q] = imgData.data[q + 1] = imgData.data[q + 2] = 0;
+          imgData.data[q + 3] = 0;
+        } else {
+          const c = demColor((v - lo) / (hi - lo));
+          imgData.data[q] = c[0]; imgData.data[q + 1] = c[1]; imgData.data[q + 2] = c[2];
+          imgData.data[q + 3] = 255;
+        }
+      }
+    }
+    cv.ctx.putImageData(imgData, 0, 0);
+    let bbox = null;
+    try { bbox = image.getBoundingBox(); } catch (e) { bbox = null; }
+    const floatBand = noData === null || noData === undefined
+      ? band : Float32Array.from(band, (v) => Number(v) === Number(noData) ? NaN : Number(v));
+    HF.dem = {band: floatBand, W, H, bbox, lo, hi, name: file.name};
+    return {
+      ok: true, image: cv.canvas.toDataURL('image/png'),
+      width: W, height: H, sourceWidth: SW, sourceHeight: SH,
+      min: lo, max: hi, bbox, name: file.name,
+      downsampled: W < SW || H < SH
+    };
+  }
+
+  HF.demElevation = function (lat, lon) {
+    const d = HF.dem;
+    if (!d || !d.bbox) return null;
+    const [west, south, east, north] = d.bbox;
+    if (!(east > west && north > south)) return null;
+    const x = Math.floor((lon - west) / (east - west) * d.W);
+    const y = Math.floor((north - lat) / (north - south) * d.H);
+    if (x < 0 || y < 0 || x >= d.W || y >= d.H) return null;
+    const v = Number(d.band[y * d.W + x]);
+    return Number.isFinite(v) ? v : null;
+  };
+
   function ndwiFromRaster(raster, greenIdx, nirIdx, threshold) {
     const g = raster.bands[greenIdx - 1], n = raster.bands[nirIdx - 1];
     if (!g || !n) throw new Error('В TIFF нет выбранного канала. Проверьте номера каналов.');
@@ -461,7 +605,7 @@
     if (!files.length) return Promise.reject(new Error('Выберите TIFF-файл.'));
     const threshold = Number(p.threshold === undefined ? -0.25 : p.threshold);
     return Promise.all(files.slice(0, 2).map((f) => f.file
-      ? decodeTiffBlob(f.file)
+      ? decodeTiffBlobSmart(f.file)
       : parseTiffRaster(dataUrlToBytes(f.data), f.name || 'raster.tif')))
       .then((parsed) => {
         const raster = parsed.length === 1
@@ -2034,6 +2178,8 @@
         });
       case '/api/tiff/ndwi':
         return tiffNdwi(p);
+      case '/api/dem/preview':
+        return demPreview(p);
       case '/api/map/view':
         return mapView(p);
       case '/api/map/analyze':
