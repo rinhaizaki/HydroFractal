@@ -727,6 +727,36 @@
       return { dem, W, H, source: demSource, dgeo: { x0: tx0, y0: ty0, z: demZoom, w: W, h: H } };
     });
   }
+  function resampleMaskToView(mask, dW, dH, dgeo, geo, W, H) {
+    const out = new Uint8Array(W * H);
+    const k = Math.pow(2, dgeo.z - geo.z);
+    const fx = (geo.x0 * k - dgeo.x0) * TILE;
+    const fy = (geo.y0 * k - dgeo.y0) * TILE;
+    for (let y = 0; y < H; y++) {
+      const sy = Math.floor(fy + (y + 0.5) * k);
+      if (sy < 0 || sy >= dH) continue;
+      for (let x = 0; x < W; x++) {
+        const sx = Math.floor(fx + (x + 0.5) * k);
+        if (sx < 0 || sx >= dW) continue;
+        out[y * W + x] = mask[sy * dW + sx] ? 1 : 0;
+      }
+    }
+    return out;
+  }
+
+  function maskToPng(mask, W, H) {
+    const { canvas, ctx } = canvasContext(W, H);
+    const img = ctx.createImageData(W, H);
+    for (let i = 0; i < mask.length; i++) {
+      const v = mask[i] ? 255 : 0;
+      const q = i * 4;
+      img.data[q] = img.data[q + 1] = img.data[q + 2] = v;
+      img.data[q + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    return canvas.toDataURL('image/png');
+  }
+
   function sampleDemToView(info, geo, W, H) {
     const k = Math.pow(2, info.dgeo.z - geo.z);
     const out = new Float32Array(W * H);
@@ -1114,22 +1144,22 @@
       const overlay = overlayMap(overlayCanvas.canvas, geo, dgeo, catchMask, net, ch.line,
         [(tp.x - geo.x0) * TILE, (tp.y - geo.y0) * TILE], previewMask);
       const reportCanvas = canvasContext(W, H);
-      const channelMask = canvasContext(dW, dH);
-      const maskPixels = channelMask.ctx.createImageData(dW, dH);
-      for (let i = 0; i < ch.line.length; i++) {
-        if (!ch.line[i]) continue;
-        const q = i * 4;
-        maskPixels.data[q] = maskPixels.data[q + 1] = maskPixels.data[q + 2] = 255;
-        maskPixels.data[q + 3] = 255;
-      }
-      channelMask.ctx.putImageData(maskPixels, 0, 0);
-      const mask = channelMask.canvas.toDataURL('image/png');
+      const mask = maskToPng(ch.line, dW, dH);
+      const catchmentView = resampleMaskToView(catchMask, dW, dH, dgeo, geo, W, H);
+      const networkView = resampleMaskToView(net, dW, dH, dgeo, geo, W, H);
+      const outletPx = {
+        x: Math.round((tp.x - geo.x0) * TILE * 100) / 100,
+        y: Math.round((tp.y - geo.y0) * TILE * 100) / 100
+      };
       return Promise.all([loadImage(viewResult.image), loadImage(overlay)]).then(([baseImg, overImg]) => {
         reportCanvas.ctx.drawImage(baseImg, 0, 0, W, H);
         reportCanvas.ctx.drawImage(overImg, 0, 0, W, H);
         const image = reportCanvas.canvas.toDataURL('image/png');
         return {
           ok: true, image, overlay, mask, width: W, height: H,
+          catchment: maskToPng(catchmentView, W, H),
+          network: maskToPng(networkView, W, H),
+          outlet_px: outletPx, geo, dgeo,
           tiles: viewResult.tiles, relief: viewResult.relief,
           demo: !!viewResult.demo,
           credit: viewResult.credit,
@@ -1264,7 +1294,8 @@
       <table class="${cls || ''}"><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead>
       <tbody>${rows.map((row) => '<tr>' + row.map((c) => `<td>${escapeHtml(c)}</td>`).join('') + '</tr>').join('')}</tbody></table>`;
     const mapReport = (payload.source_name === 'карта и водосбор' ||
-      /карте/i.test(payload.title || ''));
+      /карт/i.test(payload.source_name || '') ||
+      /карт/i.test(payload.title || ''));
     // Легенда и координатная метка для рисунка 2.
     const geo = payload.geo || {};
     const center = geo.center || {}, outlet = geo.outlet || {};

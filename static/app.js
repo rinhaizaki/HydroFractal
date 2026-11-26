@@ -44,7 +44,7 @@
     zoom: 1, cx: 0, cy: 0, fit: 1,
     undo: [], redo: [], painting: false, panning: false, lastPaint: null, lastPointer: null,
     result: null, waterPixels: 0, waterShare: 0, minimapVisible: false, maskNonEmpty: false,
-    overlayDataURL: null, maskTouched: false, cropped: false,
+    overlayDataURL: null, maskTouched: false, cropped: false, photoGeo: null,
     crop: { active: false, start: null, end: null, ready: false, handle: null, dragOrigin: null },
     photoMarks: [], photoMarkMode: false, photoMarkColor: '#5F0001',
     photoDrawings: [], photoDrawMode: false, photoDrawCurrent: null,
@@ -697,6 +697,7 @@
   }
   async function showPhoto(dataURL, name, opts) {
     const keepHistory = !!(opts && opts.keepHistory);
+    S.photoGeo = (opts && opts.photoGeo) || null;
     if (!keepHistory) S.cropped = false;
     const img = await loadImage(dataURL);
     S.image = img; S.baseDataURL = dataURL;
@@ -866,6 +867,7 @@
         ['Пикселей воды', String(S.waterPixels)],
         ['Масштаб, м/пиксель', $('scaleText').value || 'не указан']
       ],
+      geo: S.photoGeo || undefined,
       result: S.result || {}, table: S.result ? S.result.table : [],
       stream: S.result ? S.result.stream : {}, plot: S.result ? S.result.plot : null,
       image: S.overlayDataURL || S.baseDataURL
@@ -1725,10 +1727,163 @@
     if (!S.map.geo) { toast('Карта ещё загружается.'); return false; }
     return true;
   }
+  async function readMaskPixels(dataURL, W, H) {
+    const img = await loadImage(dataURL);
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, W, H);
+    const data = ctx.getImageData(0, 0, W, H).data;
+    const out = new Uint8Array(W * H);
+    for (let i = 0; i < out.length; i++) out[i] = data[i * 4] > 127 ? 1 : 0;
+    return out;
+  }
+
+  // Водосбор, посчитанный по ЦМР, превращается в обычный «фотоснимок»:
+  // снимок обрезается по контуру водосбора, а речная сеть становится маской.
+  async function clipWatershedToPhoto(baseURL, catchmentURL, networkURL, outletPx, W, H) {
+    const [baseImg, catchMask, netMask] = await Promise.all([
+      loadImage(baseURL),
+      readMaskPixels(catchmentURL, W, H),
+      readMaskPixels(networkURL, W, H)
+    ]);
+    let x0 = W, y0 = H, x1 = -1, y1 = -1;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (!catchMask[y * W + x]) continue;
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+    if (x1 < x0 || y1 < y0) throw new Error('Водосбор пуст — попробуйте другую точку створа.');
+    const margin = 8;
+    x0 = Math.max(0, x0 - margin); y0 = Math.max(0, y0 - margin);
+    x1 = Math.min(W - 1, x1 + margin); y1 = Math.min(H - 1, y1 + margin);
+    const pw = x1 - x0 + 1, ph = y1 - y0 + 1;
+
+    const src = document.createElement('canvas');
+    src.width = W; src.height = H;
+    const sctx = src.getContext('2d', { willReadFrequently: true });
+    sctx.drawImage(baseImg, 0, 0, W, H);
+    const baseData = sctx.getImageData(0, 0, W, H).data;
+
+    const photo = document.createElement('canvas');
+    photo.width = pw; photo.height = ph;
+    const pctx = photo.getContext('2d');
+    const crop = pctx.createImageData(pw, ph);
+    for (let y = 0; y < ph; y++) {
+      for (let x = 0; x < pw; x++) {
+        const si = ((y + y0) * W + (x + x0)) * 4;
+        const di = (y * pw + x) * 4;
+        const inside = catchMask[(y + y0) * W + (x + x0)];
+        crop.data[di] = inside ? baseData[si] : 246;
+        crop.data[di + 1] = inside ? baseData[si + 1] : 241;
+        crop.data[di + 2] = inside ? baseData[si + 2] : 232;
+        crop.data[di + 3] = 255;
+      }
+    }
+    pctx.putImageData(crop, 0, 0);
+
+    const mask = document.createElement('canvas');
+    mask.width = pw; mask.height = ph;
+    const mctx = mask.getContext('2d');
+    const cropMask = mctx.createImageData(pw, ph);
+    let pixels = 0;
+    for (let y = 0; y < ph; y++) {
+      for (let x = 0; x < pw; x++) {
+        const v = netMask[(y + y0) * W + (x + x0)] ? 255 : 0;
+        const di = (y * pw + x) * 4;
+        cropMask.data[di] = cropMask.data[di + 1] = cropMask.data[di + 2] = v;
+        cropMask.data[di + 3] = 255;
+        if (v) pixels++;
+      }
+    }
+    mctx.putImageData(cropMask, 0, 0);
+    return {
+      photo: photo.toDataURL('image/png'),
+      mask: mask.toDataURL('image/png'),
+      seed: { x: clamp(Math.round((outletPx && outletPx.x || W / 2) - x0), 0, pw - 1),
+              y: clamp(Math.round((outletPx && outletPx.y || H / 2) - y0), 0, ph - 1) },
+      width: pw, height: ph, pixels
+    };
+  }
+
+  // Основной сценарий: точка на карте → водосбор и речная сеть по ЦМР →
+  // обрезанный спутниковый снимок → все расчёты уже в режиме «Фотоснимок».
+  async function mapToPhoto() {
+    if (!mapParamsReady()) return;
+    if (!S.map.outlet) {
+      S.map.outlet = { lon: S.map.lon, lat: S.map.lat };
+      status('Створ не задан — используется центр карты.');
+    }
+    busy(true, 'Гидрологический анализ ЦМР…');
+    try {
+      const params = mapParams();
+      const resp = await api('/api/map/analyze', {
+        ...params,
+        outlet_lon: S.map.outlet.lon, outlet_lat: S.map.outlet.lat
+      });
+      S.map.credit = resp.credit;
+      S.map.demo = !!resp.demo;
+      S.map.tiles = resp.tiles || S.map.tiles;
+      S.map.reportImage = resp.image;
+      S.map.mask = resp.mask || null;
+      S.map.width = resp.width || params.width;
+      S.map.height = resp.height || params.height;
+      if (resp.relief && !S.map.reliefImg) S.map.reliefImg = await loadImage(resp.relief);
+      S.map.overlayImg = resp.overlay ? await loadImage(resp.overlay) : null;
+      S.map.overlayGeo = S.map.overlayImg ? (resp.geo || S.map.geo) : null;
+      showMapResult(resp);
+      renderMap();
+
+      busy(true, 'Обрезка снимка по водосбору…');
+      const base = await captureMapForReport(true) ||
+        (S.map.img && S.map.img.src) || resp.image;
+      const clipped = await clipWatershedToPhoto(
+        base, resp.catchment, resp.network, resp.outlet_px,
+        resp.width || params.width, resp.height || params.height);
+      const mPerPx = 156543.03392 * Math.cos(S.map.lat * Math.PI / 180) / Math.pow(2, S.map.zoom);
+      await showPhoto(clipped.photo, 'карта — водосбор → фото', {
+        photoGeo: {
+          center: { lat: S.map.lat, lon: S.map.lon },
+          outlet: { lat: S.map.outlet.lat, lon: S.map.outlet.lon },
+          zoom: S.map.zoom,
+          m_per_px: Math.round(mPerPx * 100) / 100
+        }
+      });
+      await setMaskFromDataURL(clipped.mask);
+      S.seed = clipped.seed;
+      S.waterPixels = clipped.pixels;
+      S.waterShare = Math.round(10000 * clipped.pixels / (clipped.width * clipped.height)) / 100;
+      S.maskTouched = false;
+      S.cropped = true;
+      renderPhoto();
+      switchTab('photo');
+
+      busy(true, 'Расчёт D по снимку водосбора…');
+      const r = await api('/api/analyze', {
+        mask: maskForApi(), object: $('object').value,
+        max_divs: Number($('maxDivsNum').value)
+      });
+      S.result = r.result;
+      showResult(S.result);
+      setBadge('resultBadge', 'готово', 'ok');
+      status(`Водосбор → фото ${clipped.width}×${clipped.height} px; речная сеть ` +
+        `${fmt(clipped.pixels, 0)} px. D по фото = ${fmt(S.result.D, 4)}. ` +
+        'Снимок и маску можно поправить вручную и пересчитать.');
+      toast('Готово: водосбор превращён в фото, D посчитан по нему');
+    } catch (e) {
+      setBadge('mapBadge', 'ошибка', 'err');
+      status(e.message, true); toast(e.message);
+    } finally { busy(false); }
+  }
+
   // Тайлы Leaflet создаются без CORS-атрибута, поэтому прямой drawImage()
   // может сделать.canvas «грязным», и toDataURL() упадёт. Перезагружаем видимые тайлы
   // с crossOrigin=anonymous: Esri и Planetary Computer это разрешают.
-  async function captureMapForReport() {
+  async function captureMapForReport(clean) {
     const rect = el.mapCanvas.getBoundingClientRect();
     const w = Math.max(240, Math.round(rect.width));
     const h = Math.max(180, Math.round(rect.height));
@@ -1756,10 +1911,12 @@
       });
     }
     await Promise.all(jobs);
-    // Слой Canvas с контурами водосбора, метками и рисунками — локальный, безопасный.
-    try { ctx.drawImage(el.mapCanvas, 0, 0, w, h); } catch (e) { /* ignore */ }
-    if (S.map.overlayImg) {
-      try { ctx.drawImage(S.map.overlayImg, 0, 0, w, h); } catch (e) { /* ignore */ }
+    if (!clean) {
+      // Слой Canvas с контурами водосбора, метками и рисунками — локальный, безопасный.
+      try { ctx.drawImage(el.mapCanvas, 0, 0, w, h); } catch (e) { /* ignore */ }
+      if (S.map.overlayImg) {
+        try { ctx.drawImage(S.map.overlayImg, 0, 0, w, h); } catch (e) { /* ignore */ }
+      }
     }
     try { return c.toDataURL('image/jpeg', 0.92); } catch (e) { return null; }
   }
@@ -2133,7 +2290,7 @@
     });
     $('btnNdwi').addEventListener('click', toggleNdwiLayer);
     $('btnWaterSelect').addEventListener('click', selectWaterObjects);
-    $('btnMapCatch').addEventListener('click', mapAnalyze);
+    $('btnMapCatch').addEventListener('click', mapToPhoto);
     $('btnMapDim').addEventListener('click', mapAnalyze);
     $('btnMapPdf').addEventListener('click', mapSavePdf);
 
@@ -2585,13 +2742,13 @@ D после обрезки нужно пересчитать заново.`,
     'btnMapMinimap': `Показать/скрыть мини-карту с видом всего района.
 Клик по мини-карте центрирует основной холст в этом месте;
 створ при этом не ставится.`,
-    'btnMapCatch': `Строит предварительную область водосбора (синий контур),
-уточнённый водосбор (оливковый), речную сеть (коричневый)
-и главное русло (бордовый) по рельефу D8.
-Створ задаётся кликом по руслу; если его нет, используется центр карты.`,
-    'btnMapDim': `Считает D канторовским методом по главному руслу
-построенного водосбора. Таблица n/ε/N и график log–log
-появляются справа; по D оцениваются Qср, Cv и Cs.`,
+    'btnMapCatch': `Основной сценарий: по ЦМР строится полная речная сеть и водосбор
+до выбранной точки, затем спутниковый снимок обрезается по водосбору
+и открывается во вкладке «Фотоснимок». Маска речной сети и створ
+переносятся туда автоматически, D и все характеристики считаются уже по фото.`,
+    'btnMapDim': `Быстрый предварительный расчёт D по главному руслу прямо на карте
+(без перехода в «Фотоснимок»). Для основного расчёта используйте
+«🌊 Водосбор → фото».`,
     'btnMapPdf': 'Формирует сводный отчёт в PDF.',
     'modalClose': 'Закрыть окно.',
     'modalOk': 'Понятно, закрыть окно.'
@@ -2692,7 +2849,7 @@ N(ε) на малых размерах ячеек и завышают D.
     btnMapDraw: 'Рисование на карте произвольным цветом — заметки для себя, не выделение реки.',
     btnMapDrawClear: 'Удалить все цветные заметки-линии с карты.',
     drawColor: 'Цвет линий-заметок на карте.',
-    btnMapCatch: 'Построить предварительную область водосбора и речную сеть по ЦМР.',
+    btnMapCatch: 'По ЦМР: водосбор и речная сеть → обрезанный снимок → расчёты в режиме «Фотоснимок».',
     btnMapDim: 'Рассчитать фрактальную размерность главного русла по методу квадратов Кантора.',
     btnMapPdf: 'Сформировать PDF-отчёт по карте, водосбору и руслу.',
     btnNdwi: 'Показать или скрыть слой NDWI (B03/B08) по Sentinel-2 через Planetary Computer.',

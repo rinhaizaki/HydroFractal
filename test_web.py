@@ -80,3 +80,14 @@ def test_map_pipeline():
     assert analyzed.status_code == 200
     assert analyzed.json["map"]["area_km2"] > 0
     assert 1.0 <= analyzed.json["result"]["D"] <= 2.0
+    # Водосбор и речная сеть отдаются в размере окна карты — оттуда они
+    # превращаются в обрезанный «фотоснимок» на вкладке «Фотоснимок».
+    assert analyzed.json["catchment"].startswith("data:image/png")
+    assert analyzed.json["network"].startswith("data:image/png")
+    catch_img = Image.open(io.BytesIO(base64.b64decode(
+        analyzed.json["catchment"].split(",", 1)[1])))
+    assert catch_img.size == (480, 320)
+    assert catch_img.getbbox()  # водосбор не пустой
+    assert 0 <= analyzed.json["outlet_px"]["x"] <= 480
+    assert 0 <= analyzed.json["outlet_px"]["y"] <= 320
+    assert analyzed.json["geo"]["z"] == 11

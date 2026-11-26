@@ -292,6 +292,7 @@ D = 1 + h/2
   `collections/cop-dem-glo-30/items/Copernicus_DSM_COG_10_N{lat}_00_E{lon}_00_DEM/tiles/...`,
   шкала −1000…4000 м.
 - При недоступности сети включается `core/offline_map.py` / `syntheticDem`.
+- `/api/map/analyze` отдаёт маски водосбора и речной сети в пикселях окна (`catchment`, `network`); интерфейс обрезает по ним снимок, переносит створ и маску в фото-режим и считает D уже там.
 - Гео-привязка хранится в `geo {x0, y0, z, w, h}`; перевод пиксель ↔ lon/lat
   идёт через `lonlatToTile` / `tileToLonlat`.
 

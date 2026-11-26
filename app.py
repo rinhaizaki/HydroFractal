@@ -82,6 +82,12 @@ def _encode_png(img: Image.Image) -> str:
     return "data:image/png;base64," + base64.b64encode(bio.getvalue()).decode("ascii")
 
 
+
+def _mask_png(mask) -> str:
+    """Ч/б PNG маска: белый = воды/ водосбора, чёрный = фон."""
+    arr = np.asarray(mask, dtype=np.uint8) * 255
+    return _encode_png(Image.fromarray(arr, "L"))
+
 def _encode_jpeg(img: Image.Image, quality: int = 88) -> str:
     bio = io.BytesIO()
     img.convert("RGB").save(bio, format="JPEG", quality=quality, optimize=True)
@@ -279,7 +285,8 @@ def make_report_pdf(payload: dict) -> bytes:
     from PIL import ImageFont
     geo = payload.get("geo") or {}
     map_report = (payload.get("source_name") == "карта и водосбор"
-                  or "карте" in str(payload.get("title", "")).lower())
+                  or "карт" in str(payload.get("source_name", "")).lower()
+                  or "карт" in str(payload.get("title", "")).lower())
 
     def _stamp_coordinates(img):
         """Координатная метка на спутниковом снимке рисунка 2."""
@@ -660,6 +667,15 @@ def api_map_analyze():
             overlay, (tx - geo["x0"]) * map_core.TILE,
             (ty - geo["y0"]) * map_core.TILE)
 
+        dgeo = res["dgeo"]
+        catch_view = map_core.resample_mask_to_view(
+            res["catchment"], dgeo, geo, w, h)
+        net_view = map_core.resample_mask_to_view(
+            res["network"], dgeo, geo, w, h)
+        outlet_px = {
+            "x": round((tx - geo["x0"]) * map_core.TILE, 2),
+            "y": round((ty - geo["y0"]) * map_core.TILE, 2),
+        }
         st = res["stats"]
         payload = _result_payload(dim)
         payload["plot"] = make_plot_png(dim)
@@ -667,6 +683,11 @@ def api_map_analyze():
         return jsonify({
             "ok": True,
             "image": _encode_png(overlay.convert("RGB")),
+            "catchment": _mask_png(catch_view),
+            "network": _mask_png(net_view),
+            "outlet_px": outlet_px,
+            "geo": geo,
+            "dgeo": dgeo,
             "credit": (f"{map_core.SOURCES[source]['credit']} · "
                        f"{map_core.TERRAIN_CREDIT}"),
             "demo": not offline_map.ensure_mode(),
